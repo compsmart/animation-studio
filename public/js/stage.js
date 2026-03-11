@@ -12,11 +12,45 @@ export class StageManager {
     this._canvases = {};
     for (const id of CANVAS_IDS) this._canvases[id] = document.getElementById(id);
     this._uiCtx    = this._canvases['canvas-ui'].getContext('2d');
+    this._bgCtx    = this._canvases['canvas-bg'].getContext('2d');
+    this._bgCache  = {}; // url -> Image
     this._drag     = null;
     this._showGuides = true;
     this._onCharMoved = null; // callback(normX, normY)
     this._bindDrag();
     window.addEventListener('resize', () => this.fit());
+  }
+
+  /** Draw canvas-bg: solid color + optional background image. */
+  renderBackground(project) {
+    const ctx = this._bgCtx;
+    const w   = state.stageW;
+    const h   = state.stageH;
+    ctx.fillStyle = project?.background || '#4488cc';
+    ctx.fillRect(0, 0, w, h);
+
+    const bg = project?.backgroundImage;
+    if (!bg?.url) return;
+
+    const loadAndDraw = (img) => {
+      const p = bg.placement || { x: 0.5, y: 0.5, scale: 1 };
+      const targetH = Math.round(h * (p.scale ?? 1));
+      const targetW = Math.round(targetH * (img.naturalWidth / img.naturalHeight));
+      const left = Math.round((p.x ?? 0.5) * w - targetW / 2);
+      const top  = Math.round((p.y ?? 0.5) * h - targetH / 2);
+      ctx.drawImage(img, left, top, targetW, targetH);
+    };
+
+    if (this._bgCache[bg.url]?.complete && this._bgCache[bg.url].naturalWidth) {
+      loadAndDraw(this._bgCache[bg.url]);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      this._bgCache[bg.url] = img;
+      this.renderBackground(state.project);
+    };
+    img.src = (bg.url.startsWith('http') ? '' : (window.location.origin || '')) + bg.url;
   }
 
   /** Scale the stage element to fill the available wrapper. */
@@ -43,6 +77,7 @@ export class StageManager {
       c.style.width  = dw + 'px';
       c.style.height = dh + 'px';
     }
+    this.renderBackground(state.project);
     this.renderUI();
   }
 

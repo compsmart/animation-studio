@@ -4,8 +4,43 @@
  */
 
 const KIE_BASE = 'https://api.kie.ai/api/v1';
+const KIE_FILE_BASE = 'https://kieai.redpandaai.co'; // File upload API (api.kie.ai returns 404)
 const POLL_INTERVAL_MS = 8000;
 const MAX_POLLS = 90; // ~12 minutes
+
+/**
+ * Upload a reference image to Kie's CDN via Base64. Returns a short, stable URL
+ * that Kling can use (avoids ngrok URL length/truncation issues).
+ * @param {object} opts
+ * @param {string} opts.apiKey
+ * @param {Buffer} opts.imageBuffer - PNG/JPEG buffer
+ * @param {string} [opts.fileName] - e.g. 'ref_xxx.png'
+ * @returns {Promise<string>} downloadUrl
+ */
+export async function uploadRefImageToKie(opts) {
+  const { apiKey, imageBuffer, fileName = 'ref.png' } = opts;
+  const base64Data = `data:image/png;base64,${imageBuffer.toString('base64')}`;
+
+  const res = await fetch(`${KIE_FILE_BASE}/api/file-base64-upload`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      base64Data,
+      uploadPath: 'kling-refs',
+      fileName,
+    }),
+  });
+
+  const data = await res.json();
+  if (!data.success || !data.data?.downloadUrl) {
+    throw new Error(`Kie file upload failed: ${data.msg || JSON.stringify(data)}`);
+  }
+  console.log('[Kie] Ref image uploaded:', data.data.downloadUrl?.slice(0, 60));
+  return data.data.downloadUrl;
+}
 
 /**
  * Create a Kling video generation job.
@@ -15,7 +50,7 @@ const MAX_POLLS = 90; // ~12 minutes
  * @param {string} [opts.imageUrl]   - Public URL of the reference/first-frame image
  * @param {string} [opts.mode]       - 'std' | 'pro' (default: 'std')
  * @param {string} [opts.aspectRatio] - '16:9' | '9:16' | '1:1' (default: '16:9')
- * @param {number} [opts.duration]   - seconds (default: 5)
+ * @param {number} [opts.duration]   - seconds (default: 3)
  * @returns {Promise<string>} taskId
  */
 export async function createKlingJob(opts) {
@@ -25,14 +60,19 @@ export async function createKlingJob(opts) {
     imageUrl,
     mode = 'std',
     aspectRatio = '16:9',
-    duration = 5,
+    duration = 3,
   } = opts;
 
-  const input = { mode, prompt, aspectRatio, duration };
+  const input = {
+    mode,
+    prompt,
+    aspectRatio,
+    duration: String(duration),
+    multi_shots: false, // Single-shot mode (required by API)
+    sound: false,       // Disable sound effects (required by API)
+  };
   if (imageUrl) {
-    // Kling 3.0 image-to-video input parameter
-    input.imageUrl = imageUrl;
-    input.image = imageUrl; // try both names for compatibility
+    input.image_urls = [imageUrl];
   }
 
   console.log('[Kling] Creating job:', { prompt: prompt.slice(0, 60), mode, imageUrl: imageUrl?.slice(0, 60) });

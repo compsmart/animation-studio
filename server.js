@@ -1,7 +1,7 @@
 /**
  * Video Action Studio – Express server
  *
- * Manages projects, reference images, Kling video generation jobs,
+ * Manages projects, reference images, Veo 3.1 video generation jobs,
  * and exports the complete game asset package.
  */
 
@@ -13,9 +13,9 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { v4 as uuid } from 'uuid';
 
-import { createKlingJob, pollKlingJob, downloadVideo } from './scripts/kling-video.js';
+import { createVeoJob, pollVeoJob, downloadVideo, uploadRefImageToKie } from './scripts/veo-video.js';
 import { composeReferenceImage } from './scripts/compose-reference.js';
-import { processActionVideo } from './scripts/process-action-video.js';
+import { processActionVideo, hasAudioStream, extractAudio, stripAudio } from './scripts/process-action-video.js';
 import { exportProject } from './scripts/export-package.js';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
@@ -37,8 +37,8 @@ const jobs = {};   // jobId -> { status, taskId, projectId, charId, actionId, lo
 // ── Express setup ────────────────────────────────────────────────────────────
 const app  = express();
 app.use(express.json());
+app.get('/favicon.ico', (_req, res) => res.status(204).end());
 app.use('/uploads', express.static(UPLOADS_DIR));
-app.use('/', express.static(path.join(__dirname, 'public')));
 
 const upload = multer({
   dest: UPLOADS_DIR,
@@ -121,6 +121,38 @@ app.delete('/api/projects/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/projects/:id/background-image', upload.single('image'), (req, res) => {
+  const project = loadProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  if (!req.file) return res.status(400).json({ error: 'No image provided' });
+
+  const dir = uploadsDir(project.id);
+  const filename = `bg_${uuid()}${path.extname(req.file.originalname) || '.png'}`;
+  const destPath = path.join(dir, filename);
+  fs.renameSync(req.file.path, destPath);
+
+  project.backgroundImage = {
+    filename: `${project.id}/${filename}`,
+    url: `/uploads/${project.id}/${filename}`,
+    placement: { x: 0.5, y: 0.5, scale: 1 },
+  };
+  saveProject(project);
+  res.json(project);
+});
+
+app.delete('/api/projects/:id/background-image', (req, res) => {
+  const project = loadProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  if (project.backgroundImage?.filename) {
+    const fpath = path.join(UPLOADS_DIR, project.backgroundImage.filename);
+    if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
+  }
+  project.backgroundImage = null;
+  saveProject(project);
+  res.json(project);
+});
+
 // ── Routes: characters ───────────────────────────────────────────────────────
 
 app.post('/api/projects/:id/characters', upload.single('image'), async (req, res) => {
@@ -169,6 +201,40 @@ app.delete('/api/projects/:id/characters/:charId', (req, res) => {
   project.characters = project.characters.filter(c => c.id !== req.params.charId);
   saveProject(project);
   res.json({ ok: true });
+});
+
+app.get('/api/projects/:id/characters/:charId/compose-reference', async (req, res) => {
+  const project = loadProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const char = project.characters.find(c => c.id === req.params.charId);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+
+  const charImgPath = path.join(UPLOADS_DIR, char.referenceImageFilename || '');
+  if (!char.referenceImageFilename || !fs.existsSync(charImgPath)) return res.status(404).json({ error: 'Character image not found' });
+
+  const stageW = project.stageWidth || 1920;
+  const stageH = project.stageHeight || 1080;
+  const p = char.placement || { x: 0.5, y: 0.85, scale: 0.6 };
+
+  try {
+    const buffer = await composeReferenceImage({
+      characterImagePath: charImgPath,
+      stageWidth: stageW,
+      stageHeight: stageH,
+      normX: p.x ?? 0.5,
+      normY: p.y ?? 0.85,
+      scale: p.scale ?? 0.6,
+      background: project.background || '#4488cc',
+      // Export uses only solid color + character (no background image)
+    });
+    const safeName = (char.name || 'reference').replace(/[^a-z0-9_-]/gi, '_');
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}-reference.png"`);
+    res.send(buffer);
+  } catch (err) {
+    console.error('[compose-reference]', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Route: AI Spine analysis (Gemini) ────────────────────────────────────────
@@ -268,15 +334,23 @@ Use normalized coordinates (0-1) where (0,0) is top-left. Include at least 6-12 
 
 // ── Route: generate action video ─────────────────────────────────────────────
 
-app.post('/api/projects/:id/characters/:charId/actions/generate', async (req, res) => {
-  if (!KIE_KEY) return res.status(400).json({ error: 'KIE_API_KEY not configured' });
+app.post('/api/projects/:id/characters/:charId/actions/generate', upload.single('referenceImage'), async (req, res) => {
+  if (!KIE_KEY) return res.status(400).json({ error: 'KIE_API_KEY not configured (Veo 3.1)' });
 
   const project = loadProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   const char = project.characters.find(c => c.id === req.params.charId);
   if (!char) return res.status(404).json({ error: 'Character not found' });
 
-  const { prompt, mode = 'std', actionName } = req.body;
+  // Support both JSON and multipart (multipart when reference image is uploaded)
+  const body = req.body || {};
+  const prompt = (body.prompt || (typeof body.prompt === 'string' ? body.prompt : '')).trim();
+  const mode = body.mode || 'std';
+  const actionName = (body.actionName || '').trim();
+  const duration = [4, 6, 8].includes(Number(body.duration)) ? Number(body.duration) : 8;
+  const sound = body.sound === false || body.sound === 'false' ? false : true;
+  const referenceImageFile = req.file;
+
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
 
   const jobId    = uuid();
@@ -286,7 +360,7 @@ app.post('/api/projects/:id/characters/:charId/actions/generate', async (req, re
   // Add action placeholder to project
   const action = {
     id:        actionId,
-    name:      actionName || prompt.slice(0, 40),
+    name:      (actionName || prompt.slice(0, 40)),
     prompt,
     status:    'generating',
     jobId,
@@ -310,34 +384,67 @@ app.post('/api/projects/:id/characters/:charId/actions/generate', async (req, re
   // Run pipeline in background
   (async () => {
     try {
-      // 1. Compose reference image
-      log('Composing reference frame...');
-      const charImgPath = path.join(UPLOADS_DIR, char.referenceImageFilename);
-      const refBuffer = await composeReferenceImage({
-        characterImagePath: charImgPath,
-        stageWidth:  project.stageWidth,
-        stageHeight: project.stageHeight,
-        normX:       char.placement.x,
-        normY:       char.placement.y,
-        scale:       char.placement.scale,
-        background:  project.background,
-      });
-      const refFilename = `ref_${actionId}.png`;
-      const refPath     = path.join(dir, refFilename);
-      fs.writeFileSync(refPath, refBuffer);
-      const imageUrl = `${PUBLIC_URL}/uploads/${project.id}/${refFilename}`;
-      log(`Reference image: ${imageUrl}`);
+      const stageW = project.stageWidth  || 1920;
+      const stageH = project.stageHeight || 1080;
+      const aspectRatio = stageW >= stageH ? '16:9' : '9:16';
 
-      // 2. Submit Kling job
+      let imageUrl;
+      let generationType;
+
+      if (referenceImageFile) {
+        // User provided reference image → REFERENCE_2_VIDEO (Fast only, 16:9 or 9:16)
+        log('Using user reference image...');
+        const refBuffer = fs.readFileSync(referenceImageFile.path);
+        const refFilename = `ref_user_${actionId}.png`;
+        log('Uploading reference image to Kie...');
+        imageUrl = await uploadRefImageToKie({ apiKey: KIE_KEY, imageBuffer: refBuffer, fileName: refFilename });
+        generationType = 'REFERENCE_2_VIDEO';
+      } else {
+        // Compose character on stage → FIRST_AND_LAST_FRAMES_2_VIDEO
+        log('Composing reference frame...');
+        const charImgPath = path.join(UPLOADS_DIR, char.referenceImageFilename);
+        const bgImgPath = project.backgroundImage?.filename && fs.existsSync(path.join(UPLOADS_DIR, project.backgroundImage.filename))
+          ? path.join(UPLOADS_DIR, project.backgroundImage.filename)
+          : null;
+        const refBuffer = await composeReferenceImage({
+          characterImagePath: charImgPath,
+          stageWidth:  stageW,
+          stageHeight: stageH,
+          normX:       char.placement?.x ?? 0.5,
+          normY:       char.placement?.y ?? 0.85,
+          scale:       char.placement?.scale ?? 0.6,
+          background:  project.background,
+          ...(bgImgPath && { backgroundImagePath: bgImgPath, backgroundImagePlacement: project.backgroundImage?.placement }),
+        });
+        log(`Reference image: ${stageW}×${stageH}`);
+        const refFilename = `ref_${actionId}.png`;
+        fs.writeFileSync(path.join(dir, refFilename), refBuffer);
+        log('Uploading reference image to Kie...');
+        imageUrl = await uploadRefImageToKie({ apiKey: KIE_KEY, imageBuffer: refBuffer, fileName: refFilename });
+        generationType = 'FIRST_AND_LAST_FRAMES_2_VIDEO';
+      }
+      log(`Reference: ${imageUrl.slice(0, 50)}...`);
+
+      // Submit Veo 3.1 job
       jobs[jobId].status = 'generating';
-      log('Submitting to Kling...');
-      const taskId = await createKlingJob({ apiKey: KIE_KEY, prompt, imageUrl, mode });
+      log('Submitting to Veo 3.1...');
+      const veoModel = generationType === 'REFERENCE_2_VIDEO' ? 'veo3_fast' : (mode === 'pro' ? 'veo3' : 'veo3_fast');
+      const taskId = await createVeoJob({
+        apiKey: KIE_KEY,
+        prompt,
+        imageUrl,
+        generationType,
+        model: veoModel,
+        aspectRatio,
+        duration,
+        sound,
+      });
       jobs[jobId].taskId = taskId;
-      log(`Kling task: ${taskId}`);
+      log(`Veo task: ${taskId}`);
 
       // 3. Poll
       jobs[jobId].status = 'polling';
-      const videoUrl = await pollKlingJob(taskId, KIE_KEY, (elapsed) => {
+      const videoUrl = await pollVeoJob(taskId, KIE_KEY, (elapsed) => {
         jobs[jobId].elapsed = elapsed;
         log(`Polling... ${elapsed}s elapsed`);
       });
@@ -349,10 +456,31 @@ app.post('/api/projects/:id/characters/:charId/actions/generate', async (req, re
       const vidPath     = path.join(dir, vidFilename);
       await downloadVideo(videoUrl, vidPath);
 
+      const hasAudio = await hasAudioStream(vidPath);
+      if (hasAudio) {
+        log('Extracting audio...');
+        const audioFilename = `audio_${actionId}.mp3`;
+        const audioPath = path.join(dir, audioFilename);
+        await extractAudio(vidPath, audioPath);
+        log('Stripping audio from video...');
+        await stripAudio(vidPath);
+        const projAud = loadProject(project.id);
+        const actAud = projAud.characters.find(c => c.id === char.id)?.actions.find(a => a.id === actionId);
+        if (actAud) {
+          actAud.audioFilename = `${project.id}/${audioFilename}`;
+          actAud.audioUrl = `/uploads/${project.id}/${audioFilename}`;
+          saveProject(projAud);
+        }
+      } else if (!sound) {
+        log('Stripping audio...');
+        await stripAudio(vidPath);
+      }
+
       // 5. Process (preview frame + metadata)
       jobs[jobId].status = 'processing';
       log('Extracting preview frame...');
       const meta = await processActionVideo(vidPath, dir);
+      log(`Video dimensions: ${meta.width}×${meta.height} (ref was ${stageW}×${stageH})`);
 
       // 6. Update project
       const proj2 = loadProject(project.id);
@@ -419,6 +547,62 @@ app.delete('/api/projects/:id/characters/:charId/actions/:actionId', (req, res) 
   res.json({ ok: true });
 });
 
+app.post('/api/projects/:id/characters/:charId/actions/:actionId/duplicate', async (req, res) => {
+  const project = loadProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const char = project.characters.find(c => c.id === req.params.charId);
+  if (!char) return res.status(404).json({ error: 'Character not found' });
+  const action = char.actions.find(a => a.id === req.params.actionId);
+  if (!action) return res.status(404).json({ error: 'Action not found' });
+  if (action.status !== 'ready') return res.status(400).json({ error: 'Can only duplicate ready actions' });
+
+  const newActionId = uuid();
+  const dir = uploadsDir(project.id);
+  const srcPath = path.join(UPLOADS_DIR, action.videoFilename);
+  const vidFilename = `action_${newActionId}.mp4`;
+  const destPath = path.join(dir, vidFilename);
+
+  fs.copyFileSync(srcPath, destPath);
+  const meta = await processActionVideo(destPath, dir);
+
+  let audioFilename = null;
+  let audioUrl = null;
+  if (action.audioFilename) {
+    const srcAudPath = path.join(UPLOADS_DIR, action.audioFilename);
+    if (fs.existsSync(srcAudPath)) {
+      const audFilename = `audio_${newActionId}.mp3`;
+      const destAudPath = path.join(dir, audFilename);
+      fs.copyFileSync(srcAudPath, destAudPath);
+      audioFilename = `${project.id}/${audFilename}`;
+      audioUrl = `/uploads/${project.id}/${audFilename}`;
+    }
+  }
+
+  const newAction = {
+    id: newActionId,
+    name: `Copy of ${action.name}`,
+    prompt: action.prompt,
+    status: 'ready',
+    videoFilename: `${project.id}/${vidFilename}`,
+    videoUrl: `/uploads/${project.id}/${vidFilename}`,
+    previewFilename: `${project.id}/${meta.previewFilename}`,
+    previewUrl: `/uploads/${project.id}/${meta.previewFilename}`,
+    duration: meta.duration,
+    width: meta.width,
+    height: meta.height,
+    chromaKey: { ...action.chromaKey },
+    completion: { ...action.completion },
+    trimStart: action.trimStart,
+    trimEnd: action.trimEnd,
+    audioFilename,
+    audioUrl,
+    generatedAt: Date.now(),
+  };
+  char.actions.push(newAction);
+  saveProject(project);
+  res.json(newAction);
+});
+
 // ── Route: export package ────────────────────────────────────────────────────
 
 app.post('/api/projects/:id/export', (req, res) => {
@@ -433,11 +617,14 @@ app.post('/api/projects/:id/export', (req, res) => {
     .catch(err => { console.error('[export]', err); });
 });
 
+// Static last so /api/* routes are matched first
+app.use('/', express.static(path.join(__dirname, 'public')));
+
 // ── Start ────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`\nVideo Action Studio running at http://localhost:${PORT}`);
-  console.log(`KIE key: ${KIE_KEY ? 'configured' : 'NOT SET – add KIE_API_KEY to .env'}`);
+  console.log(`KIE key: ${KIE_KEY ? 'configured (Veo 3.1)' : 'NOT SET – add KIE_API_KEY to .env'}`);
   console.log(`Gemini:  ${GEMINI_KEY ? 'configured' : 'not set (Spine analysis disabled)'}`);
   console.log(`Public URL: ${PUBLIC_URL}\n`);
 });

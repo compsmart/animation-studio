@@ -60,19 +60,24 @@
         </div>
       </div>
 
+      <!-- Spine panel -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>Spine</span>
+          <span class="arrow">&#9654;</span>
+        </div>
+        <div class="panel-body" id="panelSpine">
+          <div class="empty-state">Select a character</div>
+        </div>
+      </div>
+
       <!-- Stage panel -->
       <div class="panel">
         <div class="panel-header">
           <span>Stage</span>
           <span class="arrow">&#9654;</span>
         </div>
-        <div class="panel-body">
-          <div class="color-row">
-            <span class="label" style="min-width:72px;flex-shrink:0">Background</span>
-            <span class="color-swatch"><input type="color" id="stageBg" value="#4488cc"></span>
-            <span style="font-size:11px;color:var(--dim)">Chroma colour</span>
-          </div>
-        </div>
+        <div class="panel-body" id="panelStage"></div>
       </div>
 
     </div>
@@ -124,6 +129,28 @@
               <option value="pro">Pro (slower)</option>
             </select>
           </div>
+          <div class="form-row">
+            <span class="label" style="min-width:52px">Duration</span>
+            <select id="genDuration" class="input">
+              <option value="4">4 s</option>
+              <option value="6">6 s</option>
+              <option value="8" selected>8 s</option>
+            </select>
+          </div>
+          <div class="form-row" style="align-items:center">
+            <span class="label" style="min-width:52px">Sound</span>
+            <label class="toggle">
+              <input type="checkbox" id="genSound" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="label" style="margin-top:6px">Reference image (optional)</div>
+          <div class="form-row" style="gap:6px;align-items:center;flex-wrap:wrap">
+            <input type="file" id="genRefImage" accept="image/png,image/jpeg,image/webp" class="input" style="flex:1;min-width:0">
+            <button type="button" class="btn btn-ghost btn-sm" id="genRefClear" title="Clear reference">&#10005;</button>
+          </div>
+          <div class="help-text" id="genRefHelp">Use your own image instead of the composed stage. Uses REFERENCE_2_VIDEO (Fast model, 16:9 or 9:16).</div>
 
           <button class="btn btn-primary" id="btnGenerate" style="width:100%;margin-top:4px">
             &#9654; Generate

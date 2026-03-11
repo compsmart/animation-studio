@@ -48,7 +48,62 @@ function extractFrame(videoPath, outputPath, time = 0.1) {
   });
 }
 
-function getVideoMeta(videoPath) {
+/**
+ * Remove audio track from video (overwrites in place via temp file).
+ * @param {string} videoPath
+ * @returns {Promise<void>}
+ */
+export function stripAudio(videoPath) {
+  const tempPath = videoPath + '.noaudio.tmp.mp4';
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .outputOptions('-an')
+      .output(tempPath)
+      .on('end', () => {
+        fs.renameSync(tempPath, videoPath);
+        resolve();
+      })
+      .on('error', (err) => {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        reject(err);
+      })
+      .run();
+  });
+}
+
+/**
+ * Check if the video file has an audio stream.
+ * @param {string} videoPath
+ * @returns {Promise<boolean>}
+ */
+export function hasAudioStream(videoPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(videoPath, (err, meta) => {
+      if (err) return reject(err);
+      const hasAudio = (meta.streams || []).some(s => s.codec_type === 'audio');
+      resolve(!!hasAudio);
+    });
+  });
+}
+
+/**
+ * Extract audio from video to a separate MP3 file.
+ * @param {string} videoPath
+ * @param {string} outputPath - Path for the output MP3 (e.g. audio_action_xxx.mp3)
+ * @returns {Promise<void>}
+ */
+export function extractAudio(videoPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .outputOptions('-vn', '-acodec', 'libmp3lame', '-q:a', '4')
+      .output(outputPath)
+      .on('end', resolve)
+      .on('error', reject)
+      .run();
+  });
+}
+
+export function getVideoMeta(videoPath) {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(videoPath, (err, meta) => {
       if (err) return reject(err);

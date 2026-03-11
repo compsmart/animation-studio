@@ -93,8 +93,12 @@ class Actor extends EventTarget {
     this._ctx     = canvas.getContext('2d');
     this._state   = 'idle';   // idle | playing | transitioning
     this._video   = null;
+    this._audio   = null;
     this._rafId   = null;
     this._refImg  = null;
+    this._bgImg   = null;
+    this._ckCanvas = null;
+    this._ckCtx   = null;
     this._idleRaf = null;
     this._idleT   = 0;
     this._idleLast = null;
@@ -109,6 +113,13 @@ class Actor extends EventTarget {
     const refImg = new Image();
     refImg.onload = () => { this._refImg = refImg; this._renderIdle({}); };
     refImg.src    = baseUrl + charDef.reference;
+
+    // Load background image if present
+    if (stage?.backgroundImage) {
+      const bgImg = new Image();
+      bgImg.onload = () => { this._bgImg = bgImg; this._renderIdle({}); };
+      bgImg.src   = baseUrl + stage.backgroundImage;
+    }
   }
 
   /** Start (or resume) the idle breathing animation. */
@@ -145,17 +156,29 @@ class Actor extends EventTarget {
   stop() { this._stopVideo(); this.playIdle(); }
 
   _renderIdle({ scale = 1, dy = 0 } = {}) {
-    if (!this._refImg) return;
     const ctx = this._ctx;
     const cw  = this._canvas.width;
     const ch  = this._canvas.height;
+
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.fillStyle = this._stage?.background || '#000000';
+    ctx.fillRect(0, 0, cw, ch);
+
+    const bgPlace = this._stage?.backgroundImagePlacement;
+    if (this._bgImg && bgPlace) {
+      const sh = ch * (bgPlace.scale ?? 1);
+      const sw = sh * (this._bgImg.naturalWidth / this._bgImg.naturalHeight);
+      const sx = (bgPlace.x ?? 0.5) * cw - sw / 2;
+      const sy = (bgPlace.y ?? 0.5) * ch - sh / 2;
+      ctx.drawImage(this._bgImg, sx, sy, sw, sh);
+    }
+
+    if (!this._refImg) return;
     const p   = this._char.placement;
     const tgtH = ch * (p.scale ?? 0.6) * scale;
     const tgtW = tgtH * (this._refImg.naturalWidth / this._refImg.naturalHeight);
     const px   = p.x * cw - tgtW / 2;
     const py   = p.y * ch - tgtH + (dy * ch);
-
-    ctx.clearRect(0, 0, cw, ch);
     ctx.drawImage(this._refImg, px, py, tgtW, tgtH);
   }
 
@@ -172,6 +195,11 @@ class Actor extends EventTarget {
       document.body.appendChild(video);
       this._video = video;
 
+      this._audio = null;
+      if (actionDef.audio) {
+        this._audio = new Audio(this._base + actionDef.audio);
+      }
+
       await new Promise(res => {
         video.addEventListener('canplay', res, { once: true });
         video.src = this._base + actionDef.video;
@@ -181,10 +209,29 @@ class Actor extends EventTarget {
       const cw = this._canvas.width;
       const ch = this._canvas.height;
       const ck = actionDef.chromaKey;
+      if (!this._ckCanvas || this._ckCanvas.width !== cw || this._ckCanvas.height !== ch) {
+        this._ckCanvas = document.createElement('canvas');
+        this._ckCanvas.width = cw;
+        this._ckCanvas.height = ch;
+        this._ckCtx = this._ckCanvas.getContext('2d');
+      }
 
       const drawFrame = () => {
         if (this._state !== 'playing') return;
-        if (video.readyState >= 2) chromaKey(this._ctx, video, ck, cw, ch);
+        if (video.readyState >= 2) {
+          chromaKey(this._ckCtx, video, ck, cw, ch);
+          this._ctx.fillStyle = this._stage?.background || '#000000';
+          this._ctx.fillRect(0, 0, cw, ch);
+          const bgPlace = this._stage?.backgroundImagePlacement;
+          if (this._bgImg && bgPlace) {
+            const sh = ch * (bgPlace.scale ?? 1);
+            const sw = sh * (this._bgImg.naturalWidth / this._bgImg.naturalHeight);
+            const sx = (bgPlace.x ?? 0.5) * cw - sw / 2;
+            const sy = (bgPlace.y ?? 0.5) * ch - sh / 2;
+            this._ctx.drawImage(this._bgImg, sx, sy, sw, sh);
+          }
+          this._ctx.drawImage(this._ckCanvas, 0, 0);
+        }
         if (!video.ended) this._rafId = requestAnimationFrame(drawFrame);
       };
 
@@ -197,12 +244,14 @@ class Actor extends EventTarget {
       }, { once: true });
 
       await video.play();
+      if (this._audio) this._audio.play().catch(() => {});
       this._rafId = requestAnimationFrame(drawFrame);
     });
   }
 
   _stopVideo() {
     if (this._video) { this._video.pause(); this._video.remove(); this._video = null; }
+    if (this._audio) { this._audio.pause(); this._audio.currentTime = 0; this._audio = null; }
     cancelAnimationFrame(this._rafId); this._rafId = null;
   }
 

@@ -109,13 +109,14 @@ class AnimationEngine {
     cancelAnimationFrame(this._rafId);
     const loop = (ts) => {
       if (!this.playing) return;
-      if (this._last !== null) this._t += (ts - this._last) / 1000;
+      const speed = this._anim?._speed ?? 1.0;
+      if (this._last !== null) this._t += ((ts - this._last) / 1000) * speed;
       this._last = ts;
       if (this._t >= anim.duration) {
         if (anim.loop) this._t %= anim.duration;
         else { this._t = anim.duration; this.playing = false; }
       }
-      if (onFrame) onFrame(this._interpolate());
+      if (onFrame) onFrame(this._interpolate(), this._anim);
       if (this.playing) this._rafId = requestAnimationFrame(loop);
     };
     this._rafId = requestAnimationFrame(loop);
@@ -250,10 +251,21 @@ export class SpineEngine {
   /** Update placement (x, y, scale). */
   setPlacement(p) { this._placement = { ...this._placement, ...p }; }
 
-  /** Start idle animation. Uses first animation from spine project, or built-in breathe. */
-  startIdle() {
-    const anim = this._spineData?.animations?.[0] || BREATHE_ANIM;
-    this._animEngine.play(anim, (transforms) => this._applyTransforms(transforms));
+  /** Start idle animation. Uses animation at idleIndex, or first, or built-in breathe. */
+  startIdle(idleIndex = 0) {
+    const anims = this._spineData?.animations;
+    const anim  = (anims && anims[idleIndex]) || anims?.[0] || BREATHE_ANIM;
+    this._animEngine.play(anim, (transforms, a) => this._applyTransforms(transforms, a));
+  }
+
+  /** Render idle pose at t=0 immediately (ensures canvas has content before transition). */
+  renderIdleFrameNow(idleIndex = 0) {
+    const anims = this._spineData?.animations;
+    const anim  = (anims && anims[idleIndex]) || anims?.[0] || BREATHE_ANIM;
+    if (!this._image) return;
+    const kf = anim.keyframes?.[0];
+    const transforms = kf?.transforms || {};
+    this._applyTransforms(transforms, anim);
   }
 
   /** Stop animation. */
@@ -269,29 +281,31 @@ export class SpineEngine {
     else this._mesh.generate([], []);
   }
 
-  _applyTransforms(transforms) {
+  _applyTransforms(transforms, anim) {
     if (!this._image) return;
+    const intensity = anim?._intensity ?? 1.0;
 
     // Reset anchor base
     for (const a of this._anchors) { a.dx = 0; a.dy = 0; a.rotation = 0; a.scaleX = 1; a.scaleY = 1; }
 
-    // Apply per-anchor transforms
+    // Apply per-anchor transforms (scaled by intensity)
     for (const [id, t] of Object.entries(transforms)) {
+      const scale = intensity;
       // _body is a built-in virtual anchor used by the breathe animation
       if (id === '_body') {
         for (const a of this._anchors) {
-          a.dy += t.translateY || 0;
-          a.scaleX *= t.scale ?? 1;
-          a.scaleY *= t.scale ?? 1;
+          a.dy += (t.translateY || 0) * scale;
+          const s = 1 + ((t.scale ?? 1) - 1) * scale;
+          a.scaleX *= s; a.scaleY *= s;
         }
         continue;
       }
       const a = this._anchors.find(x => x.id === id);
       if (!a) continue;
-      a.rotation += t.rotation   || 0;
-      a.dx       += t.translateX || 0;
-      a.dy       += t.translateY || 0;
-      const s = t.scale ?? 1;
+      a.rotation += (t.rotation   || 0) * scale;
+      a.dx       += (t.translateX || 0) * scale;
+      a.dy       += (t.translateY || 0) * scale;
+      const s = 1 + ((t.scale ?? 1) - 1) * scale;
       a.scaleX   *= s; a.scaleY *= s;
     }
 

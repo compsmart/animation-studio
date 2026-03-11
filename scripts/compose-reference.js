@@ -17,6 +17,8 @@ import sharp from 'sharp';
  * @param {number} opts.normY                - Normalized bottom-Y of character (0-1)
  * @param {number} opts.scale                - Scale relative to stage height (1.0 = fills stage height)
  * @param {string} opts.background           - Hex background colour (default #4488cc for chroma)
+ * @param {string} [opts.backgroundImagePath] - Path to background image (optional)
+ * @param {{ x: number, y: number, scale: number }} [opts.backgroundImagePlacement] - Center-x, center-y, scale (optional)
  * @returns {Promise<Buffer>} PNG buffer
  */
 export async function composeReferenceImage(opts) {
@@ -28,6 +30,8 @@ export async function composeReferenceImage(opts) {
     normY = 0.85,
     scale = 0.6,
     background = '#4488cc',
+    backgroundImagePath,
+    backgroundImagePlacement,
   } = opts;
 
   // Resolve background colour
@@ -56,6 +60,23 @@ export async function composeReferenceImage(opts) {
   const clampedLeft = Math.max(0, Math.min(stageWidth  - targetW, left));
   const clampedTop  = Math.max(0, Math.min(stageHeight - targetH, top));
 
+  const composites = [];
+  if (backgroundImagePath) {
+    const bgPlace = backgroundImagePlacement || { x: 0.5, y: 0.5, scale: 1 };
+    const bgMeta = await sharp(backgroundImagePath).metadata();
+    const bgTargetH = Math.round(stageHeight * (bgPlace.scale ?? 1));
+    const bgAspect = bgMeta.width / bgMeta.height;
+    const bgTargetW = Math.round(bgTargetH * bgAspect);
+    const bgBuffer = await sharp(backgroundImagePath)
+      .resize(bgTargetW, bgTargetH, { fit: 'cover' })
+      .png()
+      .toBuffer();
+    const bgLeft = Math.round((bgPlace.x ?? 0.5) * stageWidth - bgTargetW / 2);
+    const bgTop  = Math.round((bgPlace.y ?? 0.5) * stageHeight - bgTargetH / 2);
+    composites.push({ input: bgBuffer, left: bgLeft, top: bgTop });
+  }
+  composites.push({ input: charBuffer, left: clampedLeft, top: clampedTop });
+
   const composited = await sharp({
     create: {
       width:    stageWidth,
@@ -64,7 +85,7 @@ export async function composeReferenceImage(opts) {
       background: bg,
     },
   })
-    .composite([{ input: charBuffer, left: clampedLeft, top: clampedTop }])
+    .composite(composites)
     .png()
     .toBuffer();
 

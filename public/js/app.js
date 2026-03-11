@@ -99,10 +99,10 @@ async function activateCharacter(charId) {
   // Load spine project if available
   if (char.spineProject) spineEngine.loadProject(char.spineProject);
 
-  // Start idle
+  // Start idle (use selected idle animation index)
   setState({ playerState: 'idle' });
   document.getElementById('canvas-spine').style.opacity = '1';
-  spineEngine.startIdle();
+  spineEngine.startIdle(char.spineIdleIndex ?? 0);
 
   // Render UI handle
   stage.renderUI(char);
@@ -110,7 +110,11 @@ async function activateCharacter(charId) {
 
 function loadSpineForChar(charId) {
   const char = state.project?.characters?.find(c => c.id === charId);
-  if (char?.spineProject) spineEngine.loadProject(char.spineProject);
+  if (!char) return;
+  if (char.spineProject) {
+    spineEngine.loadProject(char.spineProject);
+    spineEngine.startIdle(char.spineIdleIndex ?? 0);
+  }
 }
 
 // ── Action playback ───────────────────────────────────────────────────────────
@@ -127,16 +131,30 @@ async function playAction(actionId) {
   const spineCanvas  = document.getElementById('canvas-spine');
   const actionCanvas = document.getElementById('canvas-action');
 
-  // Hide spine, show action
   spineEngine.stopIdle();
-  spineCanvas.style.transition = 'opacity .15s';
-  spineCanvas.style.opacity    = '0';
-
   actionCanvas.style.transition = '';
-  actionCanvas.style.opacity    = '1';
+  actionCanvas.style.opacity    = '1'; // Show action layer (behind spine for now)
 
-  await videoPlayer.load(action.videoUrl, actionCanvas, action.chromaKey);
+  const dur = action.duration || 0;
+  const trimStart = action.trimStart ?? 0;
+  const trimEnd = (action.trimEnd != null && action.trimEnd > 0) ? action.trimEnd : dur;
+  await videoPlayer.load(action.videoUrl, actionCanvas, action.chromaKey, {
+    trimStart: Math.max(0, Math.min(trimStart, dur)),
+    trimEnd: Math.max(trimStart, Math.min(trimEnd, dur)),
+    audioUrl: action.audioUrl || null,
+  });
   await videoPlayer.play();
+
+  // Hide spine only when video has started — overlap avoids blink
+  const onPlaying = () => {
+    videoPlayer.removeEventListener('playing', onPlaying);
+    requestAnimationFrame(() => {
+      spineCanvas.style.transition = 'opacity .12s';
+      spineCanvas.style.opacity    = '0';
+    });
+  };
+  videoPlayer.addEventListener('playing', onPlaying);
+  if (videoPlayer.readyState >= 2 && !videoPlayer.paused) onPlaying();
 }
 
 async function returnToIdle() {
@@ -149,8 +167,14 @@ async function returnToIdle() {
   const spineCanvas  = document.getElementById('canvas-spine');
   const actionCanvas = document.getElementById('canvas-action');
 
-  // Resume idle render before transition starts (so it's ready beneath the transition)
-  spineEngine.startIdle();
+  const idleIndex = char?.spineIdleIndex ?? 0;
+
+  // Render spine immediately so reference is on canvas before we transition
+  spineEngine.renderIdleFrameNow(idleIndex);
+  spineEngine.startIdle(idleIndex);
+
+  // Ensure spine has drawn (rAF flushes paint)
+  await new Promise(r => requestAnimationFrame(r));
 
   const type     = action?.completion?.mode === 'seamless' ? 'seamless' : (action?.completion?.transition || 'fade');
   const duration = action?.completion?.duration || 800;
