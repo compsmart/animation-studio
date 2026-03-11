@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video Action Studio</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────── -->
+<header id="header">
+  <span class="logo">Video <span>Action</span> Studio</span>
+
+  <input id="projectName" class="input" placeholder="Project name…" style="max-width:220px">
+
+  <div class="seg-ctrl" style="margin-left:4px">
+    <button class="active" data-size="1080p">1080p</button>
+    <button data-size="720p">720p</button>
+  </div>
+
+  <div class="header-right">
+    <button class="btn btn-ghost btn-sm" id="btnNewProject">&#128193; Projects</button>
+    <button class="btn btn-ghost btn-sm" id="btnSave">Save</button>
+    <button class="btn btn-primary btn-sm" id="btnExport">&#8681; Export</button>
+  </div>
+</header>
+
+<!-- ── Main layout ────────────────────────────────────────────────── -->
+<div id="main">
+
+  <!-- Left sidebar -->
+  <aside class="sidebar" id="sidebar-left">
+    <div class="sidebar-scroll">
+
+      <!-- Characters panel -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>Characters</span>
+          <span class="arrow">&#9654;</span>
+        </div>
+        <div class="panel-body">
+          <div id="uploadZone" class="drop-zone">
+            <input type="file" id="uploadInput" accept="image/*">
+            &#8679; Drop character image here<br>
+            <span style="color:var(--dim);font-size:10px">PNG with transparency recommended</span>
+          </div>
+          <div id="charList"></div>
+        </div>
+      </div>
+
+      <!-- Placement panel -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>Placement</span>
+          <span class="arrow">&#9654;</span>
+        </div>
+        <div class="panel-body" id="panelCharSettings">
+          <div class="empty-state">Select a character</div>
+        </div>
+      </div>
+
+      <!-- Stage panel -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>Stage</span>
+          <span class="arrow">&#9654;</span>
+        </div>
+        <div class="panel-body">
+          <div class="color-row">
+            <span class="label" style="min-width:72px;flex-shrink:0">Background</span>
+            <span class="color-swatch"><input type="color" id="stageBg" value="#4488cc"></span>
+            <span style="font-size:11px;color:var(--dim)">Chroma colour</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- Centre stage -->
+  <div id="stage-wrapper">
+    <!-- Stage tools overlay -->
+    <div id="stage-tools">
+      <button class="btn btn-ghost btn-sm active" id="btnGuides" data-tip="Toggle guides">&#9141;</button>
+    </div>
+
+    <!-- Layered canvases -->
+    <div id="stage">
+      <canvas id="canvas-bg"     class="stage-layer"></canvas>
+      <canvas id="canvas-spine"  class="stage-layer"></canvas>
+      <canvas id="canvas-action" class="stage-layer" style="opacity:0"></canvas>
+      <canvas id="canvas-ui"     class="stage-layer" style="cursor:default"></canvas>
+    </div>
+
+    <!-- Play overlay -->
+    <div id="play-overlay">
+      <button class="btn btn-success" id="btnPlay">&#9654; Play action</button>
+    </div>
+  </div>
+
+  <!-- Right sidebar -->
+  <aside class="sidebar" id="sidebar-right">
+    <div class="sidebar-scroll">
+
+      <!-- Generate panel -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>Generate action</span>
+          <span class="arrow">&#9654;</span>
+        </div>
+        <div class="panel-body">
+          <div class="label">Action name (optional)</div>
+          <input class="input" id="genName" placeholder="e.g. Shoot web">
+
+          <div class="label" style="margin-top:4px">Prompt</div>
+          <textarea class="input" id="genPrompt"
+            placeholder="Describe the action… e.g. Spiderman shoots his web across the screen from right to left"></textarea>
+
+          <div class="form-row">
+            <span class="label" style="min-width:52px">Quality</span>
+            <select id="genMode" class="input">
+              <option value="std">Standard</option>
+              <option value="pro">Pro (slower)</option>
+            </select>
+          </div>
+
+          <button class="btn btn-primary" id="btnGenerate" style="width:100%;margin-top:4px">
+            &#9654; Generate
+          </button>
+        </div>
+      </div>
+
+      <!-- Actions panel -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>Action library</span>
+          <span class="arrow">&#9654;</span>
+        </div>
+        <div class="panel-body">
+          <div id="actionList"></div>
+        </div>
+      </div>
+
+      <!-- Action settings panel -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>Action settings</span>
+          <span class="arrow">&#9654;</span>
+        </div>
+        <div class="panel-body" id="panelActionSettings">
+          <div class="empty-state">Select an action</div>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+</div><!-- /#main -->
+
+<!-- ── Job queue ──────────────────────────────────────────────────── -->
+<div id="job-queue" class="collapsed">
+  <div id="queue-header">
+    <span>&#9201; Generation queue</span>
+    <span id="queueBadge" style="color:var(--accent)"></span>
+    <span style="margin-left:auto;font-size:10px">click to expand</span>
+  </div>
+  <div id="queue-list"></div>
+</div>
+
+<!-- ── New project modal ──────────────────────────────────────────── -->
+<div id="modalNewProject" class="modal-backdrop" style="display:none">
+  <div class="modal">
+    <h2>Projects</h2>
+
+    <div class="label">Recent projects</div>
+    <div id="projectList" style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:4px"></div>
+
+    <div class="divider"></div>
+    <div class="label">New project</div>
+    <form id="formNewProject" style="display:flex;flex-direction:column;gap:8px">
+      <input class="input" name="projectName" placeholder="Project name" required>
+      <select class="input" name="stageSize">
+        <option value="1080p">1920×1080 (1080p)</option>
+        <option value="720p">1280×720 (720p)</option>
+      </select>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="document.getElementById('modalNewProject').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>
