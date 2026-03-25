@@ -330,6 +330,8 @@ input[type=range]::-webkit-slider-thumb {
   position: relative;
   /* width/height set by JS */
   box-shadow: 0 8px 48px rgba(0,0,0,.6);
+  outline: 2px solid #ef4444;
+  outline-offset: 0;
 }
 
 .stage-layer {
@@ -383,6 +385,11 @@ input[type=range]::-webkit-slider-thumb {
   letter-spacing: .06em;
 }
 #queue-header:hover { color: var(--muted); }
+#btnClearQueue {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: normal;
+}
 
 #queue-list {
   padding: 0 12px 8px;
@@ -432,13 +439,37 @@ input[type=range]::-webkit-slider-thumb {
   transition: border-color .15s;
 }
 .anim-accordion.open { border-color: var(--border-light); }
-.anim-accordion.idle .anim-header { border-left: 3px solid var(--green); }
+.anim-accordion.playing { border-color: rgba(99,102,241,.55); }
+.anim-header-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.anim-play-toggle {
+  width: 28px;
+  min-width: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255,255,255,.02);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  transition: background .1s, border-color .15s;
+}
+.anim-play-toggle:hover { background: rgba(255,255,255,.06); }
+.anim-play-toggle.active {
+  background: rgba(99,102,241,.18);
+  border-color: rgba(99,102,241,.65);
+}
 .anim-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
-  padding: 6px 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
   background: transparent;
   border: none;
   color: var(--text);

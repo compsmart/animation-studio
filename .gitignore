@@ -4,3 +4,4 @@ data/
 *.mp4
 *.webm
 .DS_Store
+.vscode/

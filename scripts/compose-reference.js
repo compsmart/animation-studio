@@ -11,8 +11,8 @@ import sharp from 'sharp';
 /**
  * @param {object} opts
  * @param {string} opts.characterImagePath   - Path to character PNG (can have transparency)
- * @param {number} opts.stageWidth           - Stage width in px (e.g. 1920)
- * @param {number} opts.stageHeight          - Stage height in px (e.g. 1080)
+ * @param {number} opts.stageWidth           - Stage width in px (e.g. 1280)
+ * @param {number} opts.stageHeight          - Stage height in px (e.g. 720)
  * @param {number} opts.normX                - Normalized center-X of character (0-1)
  * @param {number} opts.normY                - Normalized bottom-Y of character (0-1)
  * @param {number} opts.scale                - Scale relative to stage height (1.0 = fills stage height)
@@ -24,8 +24,8 @@ import sharp from 'sharp';
 export async function composeReferenceImage(opts) {
   const {
     characterImagePath,
-    stageWidth  = 1920,
-    stageHeight = 1080,
+    stageWidth  = 1280,
+    stageHeight = 720,
     normX = 0.5,
     normY = 0.85,
     scale = 0.6,
@@ -52,13 +52,18 @@ export async function composeReferenceImage(opts) {
     .png()
     .toBuffer();
 
-  // Position: normX/normY describe the bottom-centre of the character
+  // Position: normX/normY describe the bottom-centre of the character.
+  // Match the UI preview exactly: allow the image to extend past the stage
+  // bounds and crop only the portion that falls outside the frame.
   const left = Math.round(normX * stageWidth - targetW / 2);
   const top  = Math.round(normY * stageHeight - targetH);
 
-  // Clamp to stage bounds
-  const clampedLeft = Math.max(0, Math.min(stageWidth  - targetW, left));
-  const clampedTop  = Math.max(0, Math.min(stageHeight - targetH, top));
+  const visibleLeft = Math.max(0, left);
+  const visibleTop = Math.max(0, top);
+  const cropLeft = Math.max(0, -left);
+  const cropTop = Math.max(0, -top);
+  const visibleWidth = Math.min(targetW - cropLeft, stageWidth - visibleLeft);
+  const visibleHeight = Math.min(targetH - cropTop, stageHeight - visibleTop);
 
   const composites = [];
   if (backgroundImagePath) {
@@ -75,7 +80,18 @@ export async function composeReferenceImage(opts) {
     const bgTop  = Math.round((bgPlace.y ?? 0.5) * stageHeight - bgTargetH / 2);
     composites.push({ input: bgBuffer, left: bgLeft, top: bgTop });
   }
-  composites.push({ input: charBuffer, left: clampedLeft, top: clampedTop });
+  if (visibleWidth > 0 && visibleHeight > 0) {
+    const visibleCharBuffer = await sharp(charBuffer)
+      .extract({
+        left: cropLeft,
+        top: cropTop,
+        width: visibleWidth,
+        height: visibleHeight,
+      })
+      .png()
+      .toBuffer();
+    composites.push({ input: visibleCharBuffer, left: visibleLeft, top: visibleTop });
+  }
 
   const composited = await sharp({
     create: {

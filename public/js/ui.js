@@ -12,6 +12,7 @@ export function init(ctx) {
   _setupPanels();
   _setupHeader();
   _setupProjectModal();
+  _setupJobQueue();
   on('project',          () => renderAll());
   on('selectedCharId',   () => { renderCharList(); renderActionLibrary(); renderCharSettings(); renderSpinePanel(); renderActionSettings(); });
   on('selectedActionId', () => { renderActionSettings(); highlightAction(); });
@@ -51,21 +52,6 @@ function _setupPanels() {
 // ── Header ───────────────────────────────────────────────────────────────────
 
 function _setupHeader() {
-  // Stage size toggle
-  document.querySelectorAll('.seg-ctrl button').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      document.querySelectorAll('.seg-ctrl button').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const [w, h] = btn.dataset.size === '720p' ? [1280, 720] : [1920, 1080];
-      setState({ stageW: w, stageH: h });
-      if (state.project) {
-        const updated = await API.updateProject(state.project.id, { stageWidth: w, stageHeight: h });
-        setState({ project: updated });
-      }
-      _ctx.stage.fit();
-    });
-  });
-
   // Project name edit
   const nameEl = document.getElementById('projectName');
   nameEl.addEventListener('change', async () => {
@@ -75,9 +61,13 @@ function _setupHeader() {
   });
 
   // Export
-  document.getElementById('btnExport').addEventListener('click', () => {
+  document.getElementById('btnExport').addEventListener('click', async () => {
     if (!state.project) return alert('No project open');
-    API.exportProject(state.project.id);
+    try {
+      await API.exportProject(state.project.id);
+    } catch (err) {
+      alert('Export failed: ' + err.message);
+    }
   });
 
   // Save (auto-saves via API on every change, this is a visual affordance)
@@ -109,8 +99,7 @@ function _setupProjectModal() {
   form.addEventListener('submit', async e => {
     e.preventDefault();
     const name  = form.querySelector('[name=projectName]').value || 'Untitled';
-    const size  = form.querySelector('[name=stageSize]').value   || '1080p';
-    const proj  = await API.createProject({ name, stageSize: size });
+    const proj  = await API.createProject({ name, stageWidth: 1280, stageHeight: 720 });
     backdrop.style.display = 'none';
     await _ctx.loadProject(proj.id);
   });
@@ -133,6 +122,17 @@ async function _renderProjectList() {
       document.getElementById('modalNewProject').style.display = 'none';
       await _ctx.loadProject(el.dataset.projectId);
     });
+  });
+}
+
+function _setupJobQueue() {
+  const clearBtn = document.getElementById('btnClearQueue');
+  clearBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const remainingJobs = Object.fromEntries(
+      Object.entries(state.jobs).filter(([, job]) => job.status !== 'done' && job.status !== 'error')
+    );
+    setState({ jobs: remainingJobs });
   });
 }
 
@@ -265,7 +265,7 @@ export function renderSpinePanel() {
   const anchors = sp.anchors || [];
   const bones   = sp.bones || [];
   const anims  = sp.animations || [];
-  const idleIdx = char.spineIdleIndex ?? 0;
+  const activeAnimIndices = new Set(_ctx.spineEngine?.getActiveAnimationIndices?.() || []);
 
   let html = '';
   if (anchors.length) {
@@ -289,20 +289,25 @@ export function renderSpinePanel() {
 
   if (anims.length) {
     html += `<div class="section-title" style="margin-top:10px">Animations (${anims.length})</div>
+      <div class="help-text" style="margin-bottom:6px">Use play to layer animations together, or stop any one without affecting the others.</div>
       <div class="spine-anim-list" id="spineAnimList">`;
     for (let i = 0; i < anims.length; i++) {
       const anim = anims[i];
       if (anim._intensity === undefined) anim._intensity = 1.0;
       if (anim._speed === undefined) anim._speed = 1.0;
       if (anim._interval === undefined) anim._interval = 0;
-      const isIdle = i === idleIdx;
-      html += `<div class="anim-accordion ${isIdle ? 'idle' : ''}" data-anim-idx="${i}">
-        <button class="anim-header" type="button">
-          <span class="anim-icon">&#9654;</span>
+      const isPlaying = activeAnimIndices.has(i);
+      html += `<div class="anim-accordion ${isPlaying ? 'playing' : ''}" data-anim-idx="${i}">
+        <div class="anim-header-row">
+          <button class="anim-play-toggle ${isPlaying ? 'active' : ''}" type="button" data-anim-idx="${i}" title="${isPlaying ? 'Stop animation' : 'Play animation'}">
+            ${isPlaying ? '&#9632;' : '&#9654;'}
+          </button>
+          <button class="anim-header" type="button">
           <span class="anim-name">${esc(anim.name || 'Animation')}</span>
           <span class="anim-dur">${(anim.duration ?? 1).toFixed(1)}s</span>
           <span class="anim-chevron">&#9658;</span>
-        </button>
+          </button>
+        </div>
         <div class="anim-body">
           <div class="anim-slider-row">
             <span class="anim-slider-label">Intensity</span>
@@ -319,11 +324,6 @@ export function renderSpinePanel() {
             <input type="range" class="anim-slider" data-param="interval" min="0" max="50" value="${Math.round((anim._interval ?? 0) * 10)}">
             <span class="anim-slider-val" data-val="interval">${(anim._interval ?? 0).toFixed(1)}s</span>
           </div>
-          <div style="margin-top:6px">
-            <button class="btn btn-sm btn-ghost set-idle-btn" data-anim-idx="${i}" style="width:100%">
-              ${isIdle ? '&#10003; Idle animation' : 'Set as idle'}
-            </button>
-          </div>
         </div>
       </div>`;
     }
@@ -334,22 +334,48 @@ export function renderSpinePanel() {
 
   panel.innerHTML = html;
 
+  const getActiveAnimationIndices = () => _ctx.spineEngine?.getActiveAnimationIndices?.() || [];
+  const updateSelectedCharacter = updatedChar => {
+    const proj = { ...state.project, characters: state.project.characters.map(c => c.id === char.id ? updatedChar : c) };
+    setState({ project: proj });
+  };
+  const syncSpinePreview = (updatedChar, activeAnimationIndices = getActiveAnimationIndices()) => {
+    _ctx.loadSpineForChar(updatedChar.id, { activeAnimationIndices });
+  };
+
   // Accordion toggles
   panel.querySelectorAll('.anim-header').forEach(hdr => {
     hdr.addEventListener('click', e => {
-      if (e.target.closest('.anim-slider') || e.target.closest('.set-idle-btn')) return;
+      if (e.target.closest('.anim-slider')) return;
       const acc = hdr.closest('.anim-accordion');
       acc.classList.toggle('open');
     });
   });
 
+  panel.querySelectorAll('.anim-play-toggle').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.animIdx ?? '0', 10);
+      _ctx.spineEngine.toggleAnimation(idx);
+      const activeAnimationIndices = getActiveAnimationIndices();
+      renderSpinePanel();
+      try {
+        const updated = await API.updateCharacter(state.project.id, char.id, { spineActiveAnimationIndices: activeAnimationIndices });
+        updateSelectedCharacter(updated);
+      } catch (err) {
+        alert('Failed to save animation playback state: ' + err.message);
+        syncSpinePreview(char);
+        renderSpinePanel();
+      }
+    });
+  });
+
   // Slider handlers — update anim and persist
   const saveSpine = makeDebounce(async () => {
-    const updated = await API.updateCharacter(state.project.id, char.id, { spineProject: sp, spineIdleIndex: idleIdx });
-    const proj = { ...state.project, characters: state.project.characters.map(c => c.id === char.id ? updated : c) };
-    setState({ project: proj });
-    _ctx.loadSpineForChar(char.id);
-    _ctx.spineEngine.startIdle();
+    const activeAnimationIndices = getActiveAnimationIndices();
+    const updated = await API.updateCharacter(state.project.id, char.id, { spineProject: sp, spineActiveAnimationIndices: activeAnimationIndices });
+    updateSelectedCharacter(updated);
+    syncSpinePreview(updated, activeAnimationIndices);
   }, 400);
 
   panel.querySelectorAll('.anim-slider').forEach(slider => {
@@ -376,19 +402,6 @@ export function renderSpinePanel() {
     slider.addEventListener('click', e => e.stopPropagation());
   });
 
-  // Set as idle
-  panel.querySelectorAll('.set-idle-btn').forEach(btn => {
-    btn.addEventListener('click', async e => {
-      e.stopPropagation();
-      const idx = parseInt(btn.dataset.animIdx ?? '0');
-      const updated = await API.updateCharacter(state.project.id, char.id, { spineIdleIndex: idx });
-      const proj = { ...state.project, characters: state.project.characters.map(c => c.id === char.id ? updated : c) };
-      setState({ project: proj });
-      _ctx.loadSpineForChar(char.id);
-      _ctx.spineEngine.startIdle();
-      renderSpinePanel();
-    });
-  });
 }
 
 // ── Action library ───────────────────────────────────────────────────────────
@@ -476,6 +489,7 @@ export function renderActionSettings() {
   if (!action) { panel.innerHTML = '<div class="empty-state">Select an action</div>'; return; }
   const ck = action.chromaKey  || {};
   const cp = action.completion || {};
+  const completionMode = cp.mode || 'seamless';
 
   panel.innerHTML = `
     <div class="label" style="margin-bottom:6px">Action name</div>
@@ -493,28 +507,28 @@ export function renderActionSettings() {
     </div>
     <div class="color-row">
       <span class="label" style="min-width:72px;flex-shrink:0">Colour</span>
-      <span class="color-swatch"><input type="color" id="ckColor" value="${ck.color||'#4488cc'}"></span>
+      <span class="color-swatch"><input type="color" id="ckColor" value="${ck.color||'#00ff00'}"></span>
       <button class="btn btn-ghost btn-sm" id="btnEyedrop" title="Pick colour from video" style="flex-shrink:0">&#128065;</button>
     </div>
     <div class="slider-row">
       <span class="label">Tolerance</span>
-      <input type="range" id="ckTol" min="0" max="255" value="${ck.tolerance??80}">
-      <span class="slider-val" id="ckTolV">${ck.tolerance??80}</span>
+      <input type="range" id="ckTol" min="0" max="255" value="${ck.tolerance??5}">
+      <span class="slider-val" id="ckTolV">${ck.tolerance??5}</span>
     </div>
     <div class="slider-row">
       <span class="label">Softness</span>
-      <input type="range" id="ckSoft" min="0" max="120" value="${ck.softness??30}">
-      <span class="slider-val" id="ckSoftV">${ck.softness??30}</span>
+      <input type="range" id="ckSoft" min="0" max="120" value="${ck.softness??5}">
+      <span class="slider-val" id="ckSoftV">${ck.softness??5}</span>
     </div>
 
     <div class="divider"></div>
     <div class="section-title" style="margin-bottom:6px">When clip ends</div>
     <div class="radio-group" id="completionMode">
-      <label class="radio-opt"><input type="radio" name="mode" value="seamless" ${cp.mode==='seamless'?'checked':''}> Seamless (video ends on reference pose)</label>
-      <label class="radio-opt"><input type="radio" name="mode" value="transition" ${cp.mode!=='seamless'?'checked':''}> Transition back</label>
+      <label class="radio-opt"><input type="radio" name="mode" value="seamless" ${completionMode === 'seamless' ? 'checked' : ''}> Seamless (video ends on reference pose)</label>
+      <label class="radio-opt"><input type="radio" name="mode" value="transition" ${completionMode === 'transition' ? 'checked' : ''}> Transition back</label>
     </div>
 
-    <div id="transitionOpts" style="${cp.mode==='seamless'?'display:none':''};margin-top:8px;display:flex;flex-direction:column;gap:6px">
+    <div id="transitionOpts" style="display:${completionMode === 'transition' ? 'flex' : 'none'};margin-top:8px;flex-direction:column;gap:6px">
       <div class="label">Return transition</div>
       <div class="radio-group" id="transitionType">
         ${['fade','slide-left','slide-right','slide-top','slide-bottom'].map(t=>`
@@ -552,7 +566,7 @@ export function renderActionSettings() {
       tolerance: parseInt(document.getElementById('ckTol').value),
       softness:  parseInt(document.getElementById('ckSoft').value),
     };
-    const mode  = document.querySelector('[name=mode]:checked')?.value || 'transition';
+    const mode  = document.querySelector('[name=mode]:checked')?.value || 'seamless';
     const trans = document.querySelector('[name=trans]:checked')?.value || 'fade';
     const dur   = parseInt(document.getElementById('transDur')?.value || '800');
     const newCp = { mode, transition: trans, duration: dur, easing: 'ease-in-out' };
@@ -652,19 +666,11 @@ function renderStagePanel() {
   if (!proj) { panel.innerHTML = '<div class="empty-state">Create or open a project</div>'; return; }
 
   const bg   = proj.backgroundImage;
-  const bgColor = proj.background || '#4488cc';
-
-  let html = `
-    <div class="color-row">
-      <span class="label" style="min-width:72px;flex-shrink:0">Background</span>
-      <span class="color-swatch"><input type="color" id="stageBg" value="${bgColor}"></span>
-      <span style="font-size:11px;color:var(--dim)">Chroma colour</span>
-    </div>`;
+  let html = '';
 
   if (bg) {
     const p = bg.placement || { x: 0.5, y: 0.5, scale: 1 };
     html += `
-    <div class="divider"></div>
     <div class="section-title">Background image</div>
     <div class="bg-image-row">
       <img class="bg-thumb" src="${bg.url}" alt="">
@@ -689,7 +695,6 @@ function renderStagePanel() {
     </div>`;
   } else {
     html += `
-    <div class="divider"></div>
     <div class="section-title">Background image</div>
     <div id="bgImageZone" class="drop-zone drop-zone-sm">
       <input type="file" id="bgImageInput" accept="image/*">
@@ -698,20 +703,6 @@ function renderStagePanel() {
   }
 
   panel.innerHTML = html;
-
-  // Chroma color
-  const stageBgEl = document.getElementById('stageBg');
-  if (stageBgEl && proj) {
-    const saveBg = makeDebounce(async () => {
-      const col = stageBgEl.value;
-      const up = await API.updateProject(proj.id, { background: col });
-      setState({ project: up });
-    }, 300);
-    stageBgEl.addEventListener('input', () => {
-      _ctx.stage?.renderBackground?.({ ...proj, background: stageBgEl.value });
-      saveBg();
-    });
-  }
 
   // Background image upload
   const bgZone = document.getElementById('bgImageZone');
@@ -784,13 +775,29 @@ export function setupGenerateForm() {
   const mode     = document.getElementById('genMode');
   const duration = document.getElementById('genDuration');
   const sound    = document.getElementById('genSound');
+  const videoBg  = document.getElementById('genVideoBg');
   const name     = document.getElementById('genName');
   const refInput = document.getElementById('genRefImage');
   const refClear = document.getElementById('genRefClear');
+  const refHelp = document.getElementById('genRefHelp');
+  const includeBgImage = document.getElementById('genIncludeBgImage');
+
+  const syncReferenceUi = () => {
+    const hasCustomReference = Boolean(refInput?.files?.length);
+    if (includeBgImage) includeBgImage.disabled = hasCustomReference;
+    if (videoBg) videoBg.disabled = hasCustomReference;
+    if (refHelp) {
+      refHelp.textContent = hasCustomReference
+        ? 'Your uploaded image will be used for both the first and last frame.'
+        : 'The composed stage image will be used for both the first and last frame.';
+    }
+  };
 
   refClear?.addEventListener('click', () => {
     if (refInput) { refInput.value = ''; refInput.dispatchEvent(new Event('change')); }
   });
+  refInput?.addEventListener('change', syncReferenceUi);
+  syncReferenceUi();
 
   btn.addEventListener('click', async () => {
     const char = state.project?.characters?.find(c => c.id === state.selectedCharId);
@@ -802,7 +809,9 @@ export function setupGenerateForm() {
       mode:       mode.value,
       duration:   parseInt(duration?.value || '8', 10),
       sound:      sound?.checked ?? true,
+      videoBackground: videoBg?.value || '#00ff00',
       actionName: (name.value.trim() || area.value.trim().slice(0, 40)),
+      includeBackgroundImage: includeBgImage?.checked ?? true,
     };
     const refFile = refInput?.files?.[0];
     if (refFile) payload.referenceImage = refFile;
@@ -827,9 +836,15 @@ export function setupGenerateForm() {
 export function renderJobQueue() {
   const list   = document.getElementById('queue-list');
   const badge  = document.getElementById('queueBadge');
+  const clearBtn = document.getElementById('btnClearQueue');
   const jobs   = state.jobs;
   const active = Object.values(jobs).filter(j => j.status !== 'done' && j.status !== 'error');
+  const completed = Object.values(jobs).filter(j => j.status === 'done' || j.status === 'error');
   badge.textContent = active.length ? `(${active.length})` : '';
+  if (clearBtn) {
+    clearBtn.style.visibility = completed.length ? 'visible' : 'hidden';
+    clearBtn.disabled = !completed.length;
+  }
 
   list.innerHTML = Object.entries(jobs).map(([id, j]) => `
     <div class="job-row">

@@ -104,8 +104,8 @@ class Actor extends EventTarget {
     this._idleLast = null;
 
     // Size canvas to stage
-    const sw = stage?.width  || 1920;
-    const sh = stage?.height || 1080;
+    const sw = stage?.width  || 1280;
+    const sh = stage?.height || 720;
     canvas.width  = sw;
     canvas.height = sh;
 

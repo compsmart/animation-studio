@@ -27,101 +27,98 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * @param {string} uploadsDir - Root directory where project uploads live
  * @param {WritableStream} outputStream - ZIP written here
  */
-export function exportProject(project, uploadsDir, outputStream) {
+export async function exportProject(project, uploadsDir, outputStream) {
   const tempDir = path.join(os.tmpdir(), `vas-export-${Date.now()}`);
-  const tempFiles = [];
   fs.mkdirSync(tempDir, { recursive: true });
 
   const cleanup = () => {
     try { fs.rmSync(tempDir, { recursive: true }); } catch {}
   };
 
-  return (async () => {
-    const videoPaths = {}; // actionId -> { path }
-    const audioPaths = {}; // actionId -> { path }
+  const videoPaths = {}; // actionId -> { path }
+  const audioPaths = {}; // actionId -> { path }
 
-    for (const char of project.characters || []) {
-      for (const action of char.actions || []) {
-        if (action.status !== 'ready') continue;
-        const vidPath = path.join(uploadsDir, action.videoFilename || '');
-        if (!action.videoFilename || !fs.existsSync(vidPath)) continue;
+  for (const char of project.characters || []) {
+    for (const action of char.actions || []) {
+      if (action.status !== 'ready') continue;
+      const vidPath = path.join(uploadsDir, action.videoFilename || '');
+      if (!action.videoFilename || !fs.existsSync(vidPath)) continue;
 
-        const dur = action.duration || 0;
-        const trimStart = action.trimStart ?? 0;
-        const trimEnd = action.trimEnd != null && action.trimEnd > 0 ? action.trimEnd : dur;
-        const needsTrim = trimStart > 0.01 || (trimEnd < dur - 0.01 && trimEnd > trimStart);
+      const dur = action.duration || 0;
+      const trimStart = action.trimStart ?? 0;
+      const trimEnd = action.trimEnd != null && action.trimEnd > 0 ? action.trimEnd : dur;
+      const needsTrim = trimStart > 0.01 || (trimEnd < dur - 0.01 && trimEnd > trimStart);
 
-        if (needsTrim) {
-          const tempPath = path.join(tempDir, `${action.id}.mp4`);
-          await trimVideo(vidPath, tempPath, { start: trimStart, end: trimEnd });
-          videoPaths[action.id] = { path: tempPath };
-        } else {
-          videoPaths[action.id] = { path: vidPath };
-        }
+      if (needsTrim) {
+        const tempPath = path.join(tempDir, `${action.id}.mp4`);
+        await trimVideo(vidPath, tempPath, { start: trimStart, end: trimEnd });
+        videoPaths[action.id] = { path: tempPath };
+      } else {
+        videoPaths[action.id] = { path: vidPath };
+      }
 
-        if (action.audioFilename) {
-          const audPath = path.join(uploadsDir, action.audioFilename);
-          if (fs.existsSync(audPath)) {
-            if (needsTrim) {
-              const tempAudPath = path.join(tempDir, `${action.id}.mp3`);
-              await trimAudio(audPath, tempAudPath, { start: trimStart, end: trimEnd });
-              audioPaths[action.id] = { path: tempAudPath };
-            } else {
-              audioPaths[action.id] = { path: audPath };
-            }
+      if (action.audioFilename) {
+        const audPath = path.join(uploadsDir, action.audioFilename);
+        if (fs.existsSync(audPath)) {
+          if (needsTrim) {
+            const tempAudPath = path.join(tempDir, `${action.id}.mp3`);
+            await trimAudio(audPath, tempAudPath, { start: trimStart, end: trimEnd });
+            audioPaths[action.id] = { path: tempAudPath };
+          } else {
+            audioPaths[action.id] = { path: audPath };
           }
         }
       }
     }
+  }
 
-    return new Promise((resolve, reject) => {
-      const archive = archiver('zip', { zlib: { level: 9 } });
-      archive.pipe(outputStream);
-      archive.on('error', (err) => { cleanup(); reject(err); });
-      outputStream.on('finish', () => { cleanup(); resolve(); });
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    archive.pipe(outputStream);
+    archive.on('error', (err) => { cleanup(); reject(err); });
+    outputStream.on('finish', () => { cleanup(); resolve(); });
 
-      const manifest = buildManifest(project);
-      archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
+    const manifest = buildManifest(project);
+    archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
 
-      if (project.backgroundImage?.filename) {
-        const bgPath = path.join(uploadsDir, project.backgroundImage.filename);
-        if (fs.existsSync(bgPath)) {
-          archive.file(bgPath, { name: 'stage/background.png' });
-        }
+    if (project.backgroundImage?.filename) {
+      const bgPath = path.join(uploadsDir, project.backgroundImage.filename);
+      if (fs.existsSync(bgPath)) {
+        archive.file(bgPath, { name: 'stage/background.png' });
       }
+    }
 
-      for (const char of project.characters || []) {
-        const charDir = `characters/${char.id}`;
-        const refPath = path.join(uploadsDir, char.referenceImageFilename || '');
-        if (char.referenceImageFilename && fs.existsSync(refPath)) {
-          archive.file(refPath, { name: `${charDir}/reference.png` });
-        }
-        if (char.spineProject) {
-          archive.append(JSON.stringify(char.spineProject, null, 2), {
-            name: `${charDir}/spine-project.json`,
-          });
-        }
-        for (const action of char.actions || []) {
-          if (action.status !== 'ready') continue;
-          const actionDir = `${charDir}/actions/${action.id}`;
-          const vp = videoPaths[action.id];
-          if (vp) archive.file(vp.path, { name: `${actionDir}/video.mp4` });
-          const ap = audioPaths[action.id];
-          if (ap) archive.file(ap.path, { name: `${actionDir}/audio.mp3` });
-          const prevPath = path.join(uploadsDir, action.previewFilename || '');
-          if (action.previewFilename && fs.existsSync(prevPath)) {
-            archive.file(prevPath, { name: `${actionDir}/preview.png` });
-          }
-          archive.append(JSON.stringify(buildClipJson(action), null, 2), { name: `${actionDir}/clip.json` });
-        }
+    for (const char of project.characters || []) {
+      const charDir = `characters/${char.id}`;
+      const refPath = path.join(uploadsDir, char.referenceImageFilename || '');
+      if (char.referenceImageFilename && fs.existsSync(refPath)) {
+        archive.file(refPath, { name: `${charDir}/reference.png` });
       }
+      if (char.spineProject) {
+        archive.append(JSON.stringify(char.spineProject, null, 2), {
+          name: `${charDir}/spine-project.json`,
+        });
+      }
+      for (const action of char.actions || []) {
+        if (action.status !== 'ready') continue;
+        const actionDir = `${charDir}/actions/${action.id}`;
+        const vp = videoPaths[action.id];
+        if (vp) archive.file(vp.path, { name: `${actionDir}/video.mp4` });
+        const ap = audioPaths[action.id];
+        if (ap) archive.file(ap.path, { name: `${actionDir}/audio.mp3` });
+        const prevPath = path.join(uploadsDir, action.previewFilename || '');
+        if (action.previewFilename && fs.existsSync(prevPath)) {
+          archive.file(prevPath, { name: `${actionDir}/preview.png` });
+        }
+        archive.append(JSON.stringify(buildClipJson(action), null, 2), { name: `${actionDir}/clip.json` });
+      }
+    }
 
-      archive.append(runtimeLoaderSrc(), { name: 'runtime/loader.js' });
-      archive.append(runtimeExampleSrc(manifest), { name: 'runtime/example.html' });
-      archive.append(runtimeReadmeSrc(), { name: 'runtime/README.md' });
-      archive.finalize();
-    })();
-  })();
+    archive.append(runtimeLoaderSrc(), { name: 'runtime/loader.js' });
+    archive.append(runtimeExampleSrc(manifest), { name: 'runtime/example.html' });
+    archive.append(runtimeReadmeSrc(), { name: 'runtime/README.md' });
+    archive.finalize();
+  });
 }
 
 // ── Manifest builder ────────────────────────────────────────────────────────
@@ -132,8 +129,8 @@ function buildManifest(project) {
     generatedAt: new Date().toISOString(),
     projectName: project.name || 'Untitled',
     stage: {
-      width:      project.stageWidth  || 1920,
-      height:     project.stageHeight || 1080,
+      width:      project.stageWidth  || 1280,
+      height:     project.stageHeight || 720,
       background: project.background  || '#000000',
       ...(project.backgroundImage && {
         backgroundImage: 'stage/background.png',

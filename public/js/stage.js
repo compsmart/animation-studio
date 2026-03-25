@@ -26,7 +26,7 @@ export class StageManager {
     const ctx = this._bgCtx;
     const w   = state.stageW;
     const h   = state.stageH;
-    ctx.fillStyle = project?.background || '#4488cc';
+    ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, w, h);
 
     const bg = project?.backgroundImage;

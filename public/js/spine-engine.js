@@ -98,48 +98,128 @@ class NormalizedMesh {
   }
 }
 
-// ── AnimationEngine ───────────────────────────────────────────────────────────
+// ── AnimationMixer ────────────────────────────────────────────────────────────
 
-class AnimationEngine {
-  constructor() { this.playing = false; this._anim = null; this._t = 0; this._last = null; this._rafId = null; }
-
-  play(anim, onFrame) {
-    this._anim = anim; this._t = 0; this._last = null; this.playing = true;
+class AnimationMixer {
+  constructor(onFrame) {
+    this._entries = new Map();
+    this._rafId = null;
+    this._lastTs = null;
     this._onFrame = onFrame;
-    cancelAnimationFrame(this._rafId);
-    const loop = (ts) => {
-      if (!this.playing) return;
-      const speed = this._anim?._speed ?? 1.0;
-      if (this._last !== null) this._t += ((ts - this._last) / 1000) * speed;
-      this._last = ts;
-      if (this._t >= anim.duration) {
-        if (anim.loop) this._t %= anim.duration;
-        else { this._t = anim.duration; this.playing = false; }
-      }
-      if (onFrame) onFrame(this._interpolate(), this._anim);
-      if (this.playing) this._rafId = requestAnimationFrame(loop);
-    };
-    this._rafId = requestAnimationFrame(loop);
   }
 
-  stop() { this.playing = false; cancelAnimationFrame(this._rafId); }
+  play(key, anim) {
+    if (!anim) return;
+    this._entries.set(String(key), { key: String(key), anim, time: 0, wait: 0 });
+    this._ensureRunning();
+  }
 
-  _interpolate() {
-    const kf = this._anim.keyframes;
+  stop(key) {
+    this._entries.delete(String(key));
+    if (!this._entries.size) {
+      this._stopLoop();
+      this._emitFrame();
+    }
+  }
+
+  stopAll() {
+    this._entries.clear();
+    this._stopLoop();
+    this._emitFrame();
+  }
+
+  isPlaying(key) {
+    return this._entries.has(String(key));
+  }
+
+  getKeys() {
+    return Array.from(this._entries.keys());
+  }
+
+  _ensureRunning() {
+    if (this._rafId !== null) return;
+    this._lastTs = null;
+    this._rafId = requestAnimationFrame(ts => this._tick(ts));
+  }
+
+  _stopLoop() {
+    cancelAnimationFrame(this._rafId);
+    this._rafId = null;
+    this._lastTs = null;
+  }
+
+  _tick(ts) {
+    const dt = this._lastTs === null ? 0 : (ts - this._lastTs) / 1000;
+    this._lastTs = ts;
+
+    for (const [key, entry] of this._entries.entries()) {
+      const anim = entry.anim;
+      const duration = Math.max(anim?.duration || 0, 0.0001);
+      const speed = Math.max(anim?._speed ?? 1.0, 0);
+      const interval = Math.max(anim?._interval ?? 0, 0);
+
+      if (entry.wait > 0) {
+        entry.wait = Math.max(0, entry.wait - dt);
+        continue;
+      }
+
+      entry.time += dt * speed;
+      if (entry.time < duration) continue;
+
+      if (anim?.loop) {
+        if (interval > 0) {
+          entry.time = 0;
+          entry.wait = interval;
+        } else {
+          entry.time %= duration;
+        }
+      } else {
+        this._entries.delete(key);
+      }
+    }
+
+    this._emitFrame();
+
+    if (this._entries.size) {
+      this._rafId = requestAnimationFrame(nextTs => this._tick(nextTs));
+    } else {
+      this._stopLoop();
+    }
+  }
+
+  _emitFrame() {
+    if (!this._onFrame) return;
+    const layers = [];
+    for (const entry of this._entries.values()) {
+      if (entry.wait > 0) continue;
+      layers.push({
+        key: entry.key,
+        anim: entry.anim,
+        transforms: this._interpolate(entry.anim, entry.time),
+      });
+    }
+    this._onFrame(layers);
+  }
+
+  _interpolate(anim, time) {
+    const kf = anim?.keyframes;
     if (!kf?.length) return {};
     let prev = kf[0], next = kf[kf.length - 1];
     for (let i = 0; i < kf.length - 1; i++) {
-      if (this._t >= kf[i].time && this._t <= kf[i + 1].time) {
-        prev = kf[i]; next = kf[i + 1]; break;
+      if (time >= kf[i].time && time <= kf[i + 1].time) {
+        prev = kf[i];
+        next = kf[i + 1];
+        break;
       }
     }
     const span = next.time - prev.time;
-    const alpha = span > 0 ? (this._t - prev.time) / span : 1;
+    const alpha = span > 0 ? (time - prev.time) / span : 1;
     const out = {};
     for (const id of new Set([...Object.keys(prev.transforms || {}), ...Object.keys(next.transforms || {})])) {
-      const a = prev.transforms?.[id] || {}, b = next.transforms?.[id] || {};
+      const a = prev.transforms?.[id] || {};
+      const b = next.transforms?.[id] || {};
       out[id] = {
-        rotation:   lerp(a.rotation   || 0, b.rotation   || 0, alpha),
+        rotation:   lerp(getRotationValue(a), getRotationValue(b), alpha),
         translateX: lerp(a.translateX || 0, b.translateX || 0, alpha),
         translateY: lerp(a.translateY || 0, b.translateY || 0, alpha),
         scale:      lerp(a.scale      ?? 1, b.scale      ?? 1, alpha),
@@ -150,6 +230,10 @@ class AnimationEngine {
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
+
+function getRotationValue(transform = {}) {
+  return transform.rotation ?? transform.rotate ?? 0;
+}
 
 // ── SpineRenderer ─────────────────────────────────────────────────────────────
 
@@ -220,7 +304,7 @@ export class SpineEngine {
     this._canvas     = canvas;
     this._renderer   = new SpineRenderer(canvas);
     this._mesh       = new NormalizedMesh(12, 12);
-    this._animEngine = new AnimationEngine();
+    this._animEngine = new AnimationMixer(layers => this._applyAnimationLayers(layers));
     this._image      = null;
     this._anchors    = [];
     this._bones      = [];
@@ -240,11 +324,21 @@ export class SpineEngine {
 
   /** Load (or replace) a Spine project JSON. */
   loadProject(spineData) {
+    const activeIndices = this.getActiveAnimationIndices();
     this._spineData = spineData;
     if (spineData) {
       this._anchors = (spineData.anchors || []).map(a => ({ ...a, dx: 0, dy: 0, rotation: 0, scaleX: 1, scaleY: 1 }));
       this._bones   = spineData.bones || [];
       this._rebuildMesh();
+      const validActive = activeIndices.filter(idx => spineData.animations?.[idx]);
+      if (validActive.length) this.setActiveAnimationIndices(validActive);
+      else this._renderRestPose();
+    } else {
+      this._animEngine.stopAll();
+      this._anchors = [];
+      this._bones = [];
+      this._rebuildMesh();
+      this._renderRestPose();
     }
   }
 
@@ -254,8 +348,11 @@ export class SpineEngine {
   /** Start idle animation. Uses animation at idleIndex, or first, or built-in breathe. */
   startIdle(idleIndex = 0) {
     const anims = this._spineData?.animations;
-    const anim  = (anims && anims[idleIndex]) || anims?.[0] || BREATHE_ANIM;
-    this._animEngine.play(anim, (transforms, a) => this._applyTransforms(transforms, a));
+    const index = anims?.[idleIndex] ? idleIndex : 0;
+    const anim  = (anims && anims[index]) || anims?.[0] || BREATHE_ANIM;
+    this._animEngine.stopAll();
+    if (anims?.length) this._animEngine.play(index, anim);
+    else this._animEngine.play('__fallback__', anim);
   }
 
   /** Render idle pose at t=0 immediately (ensures canvas has content before transition). */
@@ -265,14 +362,86 @@ export class SpineEngine {
     if (!this._image) return;
     const kf = anim.keyframes?.[0];
     const transforms = kf?.transforms || {};
-    this._applyTransforms(transforms, anim);
+    this._applyAnimationLayers([{ key: 'idle-preview', anim, transforms }]);
   }
 
   /** Stop animation. */
-  stopIdle() { this._animEngine.stop(); }
+  stopIdle() {
+    this._animEngine.stopAll();
+    this._renderRestPose();
+  }
+
+  stopAllAnimations() {
+    this.stopIdle();
+  }
+
+  startAnimation(index) {
+    const anim = this._spineData?.animations?.[index];
+    if (!anim) return false;
+    this._animEngine.play(index, anim);
+    return true;
+  }
+
+  stopAnimation(index) {
+    this._animEngine.stop(index);
+  }
+
+  toggleAnimation(index) {
+    if (this.isAnimationActive(index)) {
+      this.stopAnimation(index);
+      return false;
+    }
+    return this.startAnimation(index);
+  }
+
+  setActiveAnimationIndices(indices = []) {
+    const anims = this._spineData?.animations || [];
+    this._animEngine.stopAll();
+    const unique = [...new Set(indices.map(i => Number(i)).filter(i => Number.isInteger(i) && anims[i]))];
+    unique.forEach(index => this._animEngine.play(index, anims[index]));
+    if (!unique.length) this._renderRestPose();
+  }
+
+  renderAnimationFrameNow(indices = []) {
+    const anims = this._spineData?.animations || [];
+    const unique = [...new Set(indices.map(i => Number(i)).filter(i => Number.isInteger(i) && anims[i]))];
+    if (!this._image) return;
+    if (!unique.length) {
+      this._renderRestPose();
+      return;
+    }
+    this._applyAnimationLayers(unique.map(index => ({
+      key: `preview-${index}`,
+      anim: anims[index],
+      transforms: anims[index]?.keyframes?.[0]?.transforms || {},
+    })));
+  }
+
+  getActiveAnimationIndices() {
+    return this._animEngine.getKeys()
+      .map(key => Number(key))
+      .filter(key => Number.isInteger(key))
+      .sort((a, b) => a - b);
+  }
+
+  isAnimationActive(index) {
+    return this._animEngine.isPlaying(index);
+  }
 
   /** Render a single static frame (no animation). */
   renderStatic() {
+    this._renderRestPose();
+  }
+
+  _renderRestPose() {
+    for (const a of this._anchors) {
+      a.dx = 0;
+      a.dy = 0;
+      a.rotation = 0;
+      a.scaleX = 1;
+      a.scaleY = 1;
+    }
+    if (this._anchors.length) this._mesh.deform(this._anchors);
     this._renderer.render(this._image, this._mesh, this._anchors, this._placement);
   }
 
@@ -281,12 +450,26 @@ export class SpineEngine {
     else this._mesh.generate([], []);
   }
 
-  _applyTransforms(transforms, anim) {
+  _applyAnimationLayers(layers) {
+    if (!layers.length) {
+      this._renderRestPose();
+      return;
+    }
+    for (const a of this._anchors) {
+      a.dx = 0;
+      a.dy = 0;
+      a.rotation = 0;
+      a.scaleX = 1;
+      a.scaleY = 1;
+    }
+    for (const layer of layers) this._accumulateTransforms(layer.transforms, layer.anim);
+    if (this._anchors.length) this._mesh.deform(this._anchors);
+    this._renderer.render(this._image, this._mesh, this._anchors, this._placement);
+  }
+
+  _accumulateTransforms(transforms, anim) {
     if (!this._image) return;
     const intensity = anim?._intensity ?? 1.0;
-
-    // Reset anchor base
-    for (const a of this._anchors) { a.dx = 0; a.dy = 0; a.rotation = 0; a.scaleX = 1; a.scaleY = 1; }
 
     // Apply per-anchor transforms (scaled by intensity)
     for (const [id, t] of Object.entries(transforms)) {
@@ -302,14 +485,11 @@ export class SpineEngine {
       }
       const a = this._anchors.find(x => x.id === id);
       if (!a) continue;
-      a.rotation += (t.rotation   || 0) * scale;
+      a.rotation += getRotationValue(t) * scale;
       a.dx       += (t.translateX || 0) * scale;
       a.dy       += (t.translateY || 0) * scale;
       const s = 1 + ((t.scale ?? 1) - 1) * scale;
       a.scaleX   *= s; a.scaleY *= s;
     }
-
-    if (this._anchors.length) this._mesh.deform(this._anchors);
-    this._renderer.render(this._image, this._mesh, this._anchors, this._placement);
   }
 }

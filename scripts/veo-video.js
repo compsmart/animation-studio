@@ -19,9 +19,10 @@ export { uploadRefImageToKie };
  * @param {object} opts
  * @param {string} opts.apiKey
  * @param {string} opts.prompt
- * @param {string} opts.imageUrl - Public URL of the reference/first-frame image
- * @param {string} [opts.generationType] - 'REFERENCE_2_VIDEO' (user reference) | 'FIRST_AND_LAST_FRAMES_2_VIDEO' (composed start/end frames)
- * @param {string} [opts.model] - 'veo3' | 'veo3_fast' (default: 'veo3_fast'). REFERENCE_2_VIDEO requires veo3_fast.
+ * @param {string} [opts.imageUrl] - Public URL of the reference image
+ * @param {string[]} [opts.imageUrls] - Explicit first/last frame URLs
+ * @param {string} [opts.generationType] - 'FIRST_AND_LAST_FRAMES_2_VIDEO' by default
+ * @param {string} [opts.model] - 'veo3' | 'veo3_fast' (default: 'veo3_fast')
  * @param {string} [opts.aspectRatio] - '16:9' | '9:16' | 'Auto' (default: '16:9')
  * @param {number} [opts.duration] - seconds: 4, 6, or 8 (default: 8)
  * @param {boolean} [opts.sound] - include audio (default: true). When false, generateAudio is set false.
@@ -32,30 +33,40 @@ export async function createVeoJob(opts) {
     apiKey,
     prompt,
     imageUrl,
+    imageUrls,
     generationType = 'FIRST_AND_LAST_FRAMES_2_VIDEO',
     model = 'veo3_fast',
     aspectRatio = '16:9',
     duration = 8,
     sound = true,
   } = opts;
+  const resolvedImageUrls = Array.isArray(imageUrls) && imageUrls.length
+    ? imageUrls
+    : (imageUrl ? [imageUrl, imageUrl] : []);
 
-  // REFERENCE_2_VIDEO is Fast-only; 16:9 or 9:16
-  const isRef2Video = generationType === 'REFERENCE_2_VIDEO';
-  const effectiveModel = isRef2Video ? 'veo3_fast' : model;
-  const effectiveAspect = isRef2Video && !['16:9', '9:16'].includes(aspectRatio) ? '16:9' : aspectRatio;
+  if (!resolvedImageUrls.length) {
+    throw new Error('createVeoJob requires imageUrl or imageUrls');
+  }
 
   const body = {
     prompt,
-    imageUrls: isRef2Video ? [imageUrl] : [imageUrl, imageUrl], // ref: single image; first/last: same image = transition back to start
-    model: effectiveModel,
+    imageUrls: resolvedImageUrls,
+    model,
     generationType,
-    aspect_ratio: effectiveAspect,
+    aspect_ratio: aspectRatio,
     enableTranslation: true,
   };
   if ([4, 6, 8].includes(duration)) body.duration = duration;
   if (sound === false) body.generateAudio = false;
 
-  console.log('[Veo] Creating job:', { prompt: prompt.slice(0, 60), generationType, model: effectiveModel, duration: body.duration || 8, imageUrls: body.imageUrls.length, url: imageUrl?.slice(0, 50) });
+  console.log('[Veo] Creating job:', {
+    prompt: prompt.slice(0, 60),
+    generationType,
+    model,
+    duration: body.duration || 8,
+    imageUrls: body.imageUrls.length,
+    url: body.imageUrls[0]?.slice(0, 50),
+  });
 
   const res = await fetch(`${KIE_BASE}/veo/generate`, {
     method: 'POST',

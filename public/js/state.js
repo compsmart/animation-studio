@@ -8,8 +8,8 @@ export const state = {
   selectedCharId:   null,
   selectedActionId: null,
   playerState:      'idle', // 'idle' | 'playing' | 'transitioning'
-  stageW:           1920,
-  stageH:           1080,
+  stageW:           1280,
+  stageH:           720,
   stageScale:       1,      // display canvas / logical canvas ratio
   jobs:             {},     // jobId -> { status, prompt, log, elapsed }
 };

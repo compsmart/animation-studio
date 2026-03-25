@@ -92,10 +92,21 @@ export const API = {
   getJob: (jobId) => get(`/api/jobs/${jobId}`),
 
   // Export
-  exportProject(id) {
+  async exportProject(id) {
+    const r = await fetch(`/api/projects/${id}/export`);
+    if (!r.ok) {
+      const text = await r.text();
+      let msg = text;
+      try { const j = JSON.parse(text); if (j.error) msg = j.error; } catch (_) {}
+      throw new Error(msg || `Export failed (${r.status})`);
+    }
+    const blob = await r.blob();
+    const disposition = r.headers.get('Content-Disposition');
+    const filename = (disposition?.match(/filename="?([^";]+)"?/)?.[1]) || 'project.zip';
     const a = document.createElement('a');
-    a.href = `/api/projects/${id}/export`;
-    a.download = '';
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
     a.click();
+    URL.revokeObjectURL(a.href);
   },
 };

@@ -14,11 +14,6 @@
 
   <input id="projectName" class="input" placeholder="Project name…" style="max-width:220px">
 
-  <div class="seg-ctrl" style="margin-left:4px">
-    <button class="active" data-size="1080p">1080p</button>
-    <button data-size="720p">720p</button>
-  </div>
-
   <div class="header-right">
     <button class="btn btn-ghost btn-sm" id="btnNewProject">&#128193; Projects</button>
     <button class="btn btn-ghost btn-sm" id="btnSave">Save</button>
@@ -145,12 +140,27 @@
             </label>
           </div>
 
+          <div class="color-row" style="margin-top:4px">
+            <span class="label" style="min-width:92px;flex-shrink:0">Video background</span>
+            <span class="color-swatch"><input type="color" id="genVideoBg" value="#00ff00"></span>
+            <span class="help-text" style="margin-top:0">Used for the generated reference frame</span>
+          </div>
+
           <div class="label" style="margin-top:6px">Reference image (optional)</div>
           <div class="form-row" style="gap:6px;align-items:center;flex-wrap:wrap">
             <input type="file" id="genRefImage" accept="image/png,image/jpeg,image/webp" class="input" style="flex:1;min-width:0">
             <button type="button" class="btn btn-ghost btn-sm" id="genRefClear" title="Clear reference">&#10005;</button>
           </div>
-          <div class="help-text" id="genRefHelp">Use your own image instead of the composed stage. Uses REFERENCE_2_VIDEO (Fast model, 16:9 or 9:16).</div>
+          <div class="help-text" id="genRefHelp">Use your own image instead of the composed stage. The same image will be used for both the first and last frame.</div>
+
+          <div class="form-row" style="align-items:center;margin-top:4px">
+            <span class="label" style="min-width:110px">Include bg image</span>
+            <label class="toggle">
+              <input type="checkbox" id="genIncludeBgImage" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="help-text">When enabled, the project background image layer is included in the generated reference frame. New actions also default chroma removal to this video background colour with tolerance and softness set to 5.</div>
 
           <button class="btn btn-primary" id="btnGenerate" style="width:100%;margin-top:4px">
             &#9654; Generate
@@ -190,7 +200,8 @@
   <div id="queue-header">
     <span>&#9201; Generation queue</span>
     <span id="queueBadge" style="color:var(--accent)"></span>
-    <span style="margin-left:auto;font-size:10px">click to expand</span>
+    <button type="button" class="btn btn-ghost btn-sm" id="btnClearQueue" title="Clear completed and failed jobs">Clear completed</button>
+    <span style="font-size:10px">click to expand</span>
   </div>
   <div id="queue-list"></div>
 </div>
@@ -207,10 +218,6 @@
     <div class="label">New project</div>
     <form id="formNewProject" style="display:flex;flex-direction:column;gap:8px">
       <input class="input" name="projectName" placeholder="Project name" required>
-      <select class="input" name="stageSize">
-        <option value="1080p">1920×1080 (1080p)</option>
-        <option value="720p">1280×720 (720p)</option>
-      </select>
       <div class="modal-footer">
         <button type="button" class="btn btn-ghost" onclick="document.getElementById('modalNewProject').style.display='none'">Cancel</button>
         <button type="submit" class="btn btn-primary">Create</button>

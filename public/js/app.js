@@ -17,6 +17,22 @@ let spineEngine;
 let videoPlayer;
 let transitions;
 
+function getCharacterPreviewAnimationIndices(char) {
+  const anims = char?.spineProject?.animations || [];
+  if (!anims.length) return [];
+
+  if (Array.isArray(char.spineActiveAnimationIndices)) {
+    return [...new Set(char.spineActiveAnimationIndices
+      .map(index => Number(index))
+      .filter(index => Number.isInteger(index) && anims[index]))];
+  }
+
+  const legacyIdleIndex = Number.isInteger(char?.spineIdleIndex) && anims[char.spineIdleIndex]
+    ? char.spineIdleIndex
+    : null;
+  return legacyIdleIndex != null ? [legacyIdleIndex] : [0];
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -73,7 +89,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 async function loadProject(id) {
   const proj = await API.getProject(id);
-  const [w, h] = [proj.stageWidth || 1920, proj.stageHeight || 1080];
+  const [w, h] = [proj.stageWidth || 1280, proj.stageHeight || 720];
   setState({ project: proj, stageW: w, stageH: h, selectedCharId: null, selectedActionId: null });
   stage.fit();
 
@@ -97,24 +113,35 @@ async function activateCharacter(charId) {
   spineEngine.setPlacement(char.placement || {});
 
   // Load spine project if available
-  if (char.spineProject) spineEngine.loadProject(char.spineProject);
+  spineEngine.loadProject(char.spineProject || null);
 
-  // Start idle (use selected idle animation index)
   setState({ playerState: 'idle' });
   document.getElementById('canvas-spine').style.opacity = '1';
-  spineEngine.startIdle(char.spineIdleIndex ?? 0);
+  if (char.spineProject) {
+    spineEngine.setActiveAnimationIndices(getCharacterPreviewAnimationIndices(char));
+  } else {
+    spineEngine.startIdle();
+  }
+  UI.renderSpinePanel();
 
   // Render UI handle
   stage.renderUI(char);
 }
 
-function loadSpineForChar(charId) {
+function loadSpineForChar(charId, options = {}) {
   const char = state.project?.characters?.find(c => c.id === charId);
   if (!char) return;
+  spineEngine.loadProject(char.spineProject || null);
   if (char.spineProject) {
-    spineEngine.loadProject(char.spineProject);
-    spineEngine.startIdle(char.spineIdleIndex ?? 0);
+    if (Object.prototype.hasOwnProperty.call(options, 'activeAnimationIndices')) {
+      spineEngine.setActiveAnimationIndices(options.activeAnimationIndices);
+    } else {
+      spineEngine.setActiveAnimationIndices(getCharacterPreviewAnimationIndices(char));
+    }
+  } else {
+    spineEngine.startIdle();
   }
+  UI.renderSpinePanel();
 }
 
 // ── Action playback ───────────────────────────────────────────────────────────
@@ -131,7 +158,7 @@ async function playAction(actionId) {
   const spineCanvas  = document.getElementById('canvas-spine');
   const actionCanvas = document.getElementById('canvas-action');
 
-  spineEngine.stopIdle();
+  spineEngine.stopAllAnimations();
   actionCanvas.style.transition = '';
   actionCanvas.style.opacity    = '1'; // Show action layer (behind spine for now)
 
@@ -167,16 +194,21 @@ async function returnToIdle() {
   const spineCanvas  = document.getElementById('canvas-spine');
   const actionCanvas = document.getElementById('canvas-action');
 
-  const idleIndex = char?.spineIdleIndex ?? 0;
-
   // Render spine immediately so reference is on canvas before we transition
-  spineEngine.renderIdleFrameNow(idleIndex);
-  spineEngine.startIdle(idleIndex);
+  if (char?.spineProject) {
+    const activeAnimationIndices = getCharacterPreviewAnimationIndices(char);
+    spineEngine.renderAnimationFrameNow(activeAnimationIndices);
+    spineEngine.setActiveAnimationIndices(activeAnimationIndices);
+  } else {
+    spineEngine.renderIdleFrameNow();
+    spineEngine.startIdle();
+  }
 
   // Ensure spine has drawn (rAF flushes paint)
   await new Promise(r => requestAnimationFrame(r));
 
-  const type     = action?.completion?.mode === 'seamless' ? 'seamless' : (action?.completion?.transition || 'fade');
+  const completionMode = action?.completion?.mode || 'seamless';
+  const type     = completionMode === 'seamless' ? 'seamless' : (action?.completion?.transition || 'fade');
   const duration = action?.completion?.duration || 800;
 
   await transitions.execute({ actionCanvas, spineCanvas, type, duration });
@@ -240,7 +272,7 @@ function _setupUploadZone() {
 
 async function _doUpload(file) {
   if (!state.project) {
-    const proj = await API.createProject({ name: 'Untitled', stageSize: '1080p' });
+    const proj = await API.createProject({ name: 'Untitled', stageWidth: 1280, stageHeight: 720 });
     await loadProject(proj.id);
   }
   try {

@@ -23,6 +23,9 @@ const PORT       = parseInt(process.env.PORT || '3001');
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const KIE_KEY    = process.env.KIE_API_KEY || '';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
+const DEFAULT_VIDEO_BACKGROUND = '#00ff00';
+const DEFAULT_STAGE_WIDTH = 1280;
+const DEFAULT_STAGE_HEIGHT = 720;
 
 const DATA_DIR     = path.join(__dirname, 'data');
 const PROJECTS_DIR = path.join(DATA_DIR, 'projects');
@@ -59,8 +62,8 @@ function saveProject(project) {
   fs.writeFileSync(projectPath(project.id), JSON.stringify(project, null, 2));
 }
 
-function newProject(name = 'Untitled', stageSize = '1080p') {
-  const [w, h] = stageSize === '720p' ? [1280, 720] : [1920, 1080];
+function newProject(name = 'Untitled') {
+  const [w, h] = [DEFAULT_STAGE_WIDTH, DEFAULT_STAGE_HEIGHT];
   const project = {
     id: uuid(),
     name,
@@ -97,8 +100,8 @@ app.get('/api/projects', (_req, res) => {
 });
 
 app.post('/api/projects', (req, res) => {
-  const { name, stageSize } = req.body;
-  res.json(newProject(name, stageSize));
+  const { name } = req.body;
+  res.json(newProject(name));
 });
 
 app.get('/api/projects/:id', (req, res) => {
@@ -212,8 +215,8 @@ app.get('/api/projects/:id/characters/:charId/compose-reference', async (req, re
   const charImgPath = path.join(UPLOADS_DIR, char.referenceImageFilename || '');
   if (!char.referenceImageFilename || !fs.existsSync(charImgPath)) return res.status(404).json({ error: 'Character image not found' });
 
-  const stageW = project.stageWidth || 1920;
-  const stageH = project.stageHeight || 1080;
+  const stageW = project.stageWidth || DEFAULT_STAGE_WIDTH;
+  const stageH = project.stageHeight || DEFAULT_STAGE_HEIGHT;
   const p = char.placement || { x: 0.5, y: 0.85, scale: 0.6 };
 
   try {
@@ -349,6 +352,10 @@ app.post('/api/projects/:id/characters/:charId/actions/generate', upload.single(
   const actionName = (body.actionName || '').trim();
   const duration = [4, 6, 8].includes(Number(body.duration)) ? Number(body.duration) : 8;
   const sound = body.sound === false || body.sound === 'false' ? false : true;
+  const videoBackground = typeof body.videoBackground === 'string' && /^#[0-9a-f]{6}$/i.test(body.videoBackground)
+    ? body.videoBackground
+    : DEFAULT_VIDEO_BACKGROUND;
+  const includeBackgroundImage = !(body.includeBackgroundImage === false || body.includeBackgroundImage === 'false');
   const referenceImageFile = req.file;
 
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
@@ -367,8 +374,8 @@ app.post('/api/projects/:id/characters/:charId/actions/generate', upload.single(
     videoFilename:   null,
     previewFilename: null,
     duration: 0,
-    chromaKey:  { enabled: true, color: project.background || '#4488cc', tolerance: 80, softness: 30 },
-    completion: { mode: 'transition', transition: 'fade', duration: 800, easing: 'ease-in-out' },
+    chromaKey:  { enabled: true, color: videoBackground, tolerance: 5, softness: 5 },
+    completion: { mode: 'seamless', transition: 'fade', duration: 800, easing: 'ease-in-out' },
     generatedAt: null,
   };
   char.actions.push(action);
@@ -384,26 +391,25 @@ app.post('/api/projects/:id/characters/:charId/actions/generate', upload.single(
   // Run pipeline in background
   (async () => {
     try {
-      const stageW = project.stageWidth  || 1920;
-      const stageH = project.stageHeight || 1080;
+      const stageW = project.stageWidth  || DEFAULT_STAGE_WIDTH;
+      const stageH = project.stageHeight || DEFAULT_STAGE_HEIGHT;
       const aspectRatio = stageW >= stageH ? '16:9' : '9:16';
 
-      let imageUrl;
-      let generationType;
+      let imageUrls;
 
       if (referenceImageFile) {
-        // User provided reference image → REFERENCE_2_VIDEO (Fast only, 16:9 or 9:16)
         log('Using user reference image...');
         const refBuffer = fs.readFileSync(referenceImageFile.path);
         const refFilename = `ref_user_${actionId}.png`;
         log('Uploading reference image to Kie...');
-        imageUrl = await uploadRefImageToKie({ apiKey: KIE_KEY, imageBuffer: refBuffer, fileName: refFilename });
-        generationType = 'REFERENCE_2_VIDEO';
+        const imageUrl = await uploadRefImageToKie({ apiKey: KIE_KEY, imageBuffer: refBuffer, fileName: refFilename });
+        imageUrls = [imageUrl, imageUrl];
       } else {
-        // Compose character on stage → FIRST_AND_LAST_FRAMES_2_VIDEO
         log('Composing reference frame...');
         const charImgPath = path.join(UPLOADS_DIR, char.referenceImageFilename);
-        const bgImgPath = project.backgroundImage?.filename && fs.existsSync(path.join(UPLOADS_DIR, project.backgroundImage.filename))
+        const bgImgPath = includeBackgroundImage
+          && project.backgroundImage?.filename
+          && fs.existsSync(path.join(UPLOADS_DIR, project.backgroundImage.filename))
           ? path.join(UPLOADS_DIR, project.backgroundImage.filename)
           : null;
         const refBuffer = await composeReferenceImage({
@@ -413,26 +419,27 @@ app.post('/api/projects/:id/characters/:charId/actions/generate', upload.single(
           normX:       char.placement?.x ?? 0.5,
           normY:       char.placement?.y ?? 0.85,
           scale:       char.placement?.scale ?? 0.6,
-          background:  project.background,
+          background:  videoBackground,
           ...(bgImgPath && { backgroundImagePath: bgImgPath, backgroundImagePlacement: project.backgroundImage?.placement }),
         });
         log(`Reference image: ${stageW}×${stageH}`);
         const refFilename = `ref_${actionId}.png`;
         fs.writeFileSync(path.join(dir, refFilename), refBuffer);
         log('Uploading reference image to Kie...');
-        imageUrl = await uploadRefImageToKie({ apiKey: KIE_KEY, imageBuffer: refBuffer, fileName: refFilename });
-        generationType = 'FIRST_AND_LAST_FRAMES_2_VIDEO';
+        const imageUrl = await uploadRefImageToKie({ apiKey: KIE_KEY, imageBuffer: refBuffer, fileName: refFilename });
+        imageUrls = [imageUrl, imageUrl];
       }
-      log(`Reference: ${imageUrl.slice(0, 50)}...`);
+      log(`Reference: ${imageUrls[0].slice(0, 50)}...`);
 
       // Submit Veo 3.1 job
       jobs[jobId].status = 'generating';
       log('Submitting to Veo 3.1...');
-      const veoModel = generationType === 'REFERENCE_2_VIDEO' ? 'veo3_fast' : (mode === 'pro' ? 'veo3' : 'veo3_fast');
+      const generationType = 'FIRST_AND_LAST_FRAMES_2_VIDEO';
+      const veoModel = mode === 'pro' ? 'veo3' : 'veo3_fast';
       const taskId = await createVeoJob({
         apiKey: KIE_KEY,
         prompt,
-        imageUrl,
+        imageUrls,
         generationType,
         model: veoModel,
         aspectRatio,
@@ -605,7 +612,7 @@ app.post('/api/projects/:id/characters/:charId/actions/:actionId/duplicate', asy
 
 // ── Route: export package ────────────────────────────────────────────────────
 
-app.post('/api/projects/:id/export', (req, res) => {
+function handleProjectExport(req, res) {
   const project = loadProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -614,8 +621,14 @@ app.post('/api/projects/:id/export', (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${safeName}.zip"`);
 
   exportProject(project, UPLOADS_DIR, res)
-    .catch(err => { console.error('[export]', err); });
-});
+    .catch(err => {
+      console.error('[export]', err);
+      if (!res.headersSent) res.status(500).json({ error: err.message });
+    });
+}
+
+app.get('/api/projects/:id/export', handleProjectExport);
+app.post('/api/projects/:id/export', handleProjectExport);
 
 // Static last so /api/* routes are matched first
 app.use('/', express.static(path.join(__dirname, 'public')));
